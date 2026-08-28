@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude voice-up 토큰 사용량 점검</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Pretendard", "Malgun Gothic", system-ui, sans-serif;
+      background: #f7f8fc;
+      color: #111827;
+      padding: 32px 24px 60px;
+    }
+    .wrap { max-width: 1400px; margin: 0 auto; }
+    header { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    h1 { font-size: 24px; font-weight: 900; }
+    h1 span { color: #2563eb; }
+    .actions { display: flex; gap: 10px; }
+    .btn {
+      display: inline-block; padding: 10px 18px; border-radius: 12px; border: 1px solid #d5ddec;
+      background: #fff; color: #111827; font-weight: 700; font-size: 14px; cursor: pointer; text-decoration: none;
+    }
+    .btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .btn.active { border-color: #2563eb; color: #2563eb; background: #eff4ff; }
+    .btn[hidden] { display: none; }
+    .muted { color: #667085; font-size: 13px; margin-bottom: 22px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 10px; }
+    .card { background: #fff; border: 1px solid #e5e9f2; border-radius: 16px; padding: 16px 18px; }
+    .card b { display: block; font-size: 22px; font-weight: 900; }
+    .card small { color: #667085; }
+    .card.cost b { color: #2563eb; }
+    .table-wrap { background: #fff; border: 1px solid #e5e9f2; border-radius: 16px; overflow-x: auto; margin-bottom: 12px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; white-space: nowrap; }
+    th, td { padding: 9px 12px; border-bottom: 1px solid #eef1f7; text-align: left; }
+    th { background: #f1f5ff; font-weight: 800; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.total-row td { background: #e8effc; border-top: 2px solid #c7d7f5; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .badge.ok { background: #ecfdf5; color: #059669; }
+    .badge.est { background: #eef2ff; color: #4f46e5; }
+    .notice-box {
+      background: #fffbeb; border: 1px solid #fde68a; border-radius: 14px;
+      padding: 16px 18px; font-size: 14px; line-height: 1.8; margin-bottom: 14px;
+    }
+    .notice-box.ok { background: #ecfdf5; border-color: #a7f3d0; }
+    .notice-box.err { background: #fef2f2; border-color: #fecaca; }
+    .sub-title { font-size: 15px; font-weight: 800; margin: 20px 0 8px; }
+    .sub-title small { color: #667085; font-weight: 500; }
+    footer { color: #98a2b3; font-size: 12px; margin-top: 18px; line-height: 1.7; }
+    code { background: #eef1f7; border-radius: 6px; padding: 1px 6px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>Claude <span>voice-up</span> 토큰 사용량 점검</h1>
+      <div class="actions">
+        <button class="btn" id="btn30d" onclick="setPeriod('30d')">최근 30일</button>
+        <button class="btn" id="btnAll" onclick="setPeriod('all')">전체</button>
+        <button class="btn" onclick="loadOrgUsage(); loadCallLog()">새로고침</button>
+        <a class="btn primary" id="downloadBtn" href="/api/admin/org-usage.xlsx" hidden>엑셀 다운로드</a>
+      </div>
+    </header>
+    <p class="muted" id="metaLine">Anthropic Usage Admin API 기준 · <b>voice-up</b> API 키 사용량만 표시 (모든 PC/서비스에서의 사용 포함)</p>
+
+    <div class="notice-box" id="orgStatus">계정 전체 사용량 불러오는 중...</div>
+    <section class="cards" id="cards"></section>
+    <div id="orgBody"></div>
+
+    <h2 class="section-title" style="font-size:19px;font-weight:900;margin:34px 0 6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">통합 호출 로그 <small style="color:#667085;font-weight:600;font-size:13px">이 서버를 거친 모든 외부 API 호출 (Claude + CLOVA) · 초 단위 · 최신순</small><button class="btn" style="margin-left:auto;padding:7px 14px;font-size:13px" onclick="loadCallLog()">로그만 새로고침</button></h2>
+    <p class="muted" id="logMeta">불러오는 중...</p>
+    <div id="logBody"></div>
+
+    <footer>
+      · 데이터 출처: <code>/v1/organizations/usage_report/messages</code> (Admin API 키 필요, <b>voice-up</b> 키로 필터). 오늘 사용량은 시간 단위 집계로 포함되며 완료된 시간까지만 반영됩니다(최대 ~1시간 지연). Admin 집계보다 이 서버의 호출 로그 합계가 크면(집계 지연) 오늘 행을 <b>서버 로그 기반 추정</b>으로 대체해 표시합니다 — 이 경우 다른 PC/서비스의 오늘 사용분은 Admin 집계 반영 후 나타납니다.<br>
+      · 추정비용(USD)은 사용일 기준 단가로 계산한 추정치입니다 (sonnet-5 인트로 할인 반영, 배치 할인 등 미반영). Cost API(실측 청구액)는 API 키별 필터를 지원하지 않아 voice-up만 보여주기 위해 이 화면에서는 사용하지 않습니다.<br>
+      · Console의 키 목록 페이지(settings/workspaces)의 금액은 조회 기간이 다를 수 있습니다(이 화면은 최근 30일 + 오늘).<br>
+      · 이 화면은 ADMIN_PAGE_PASSWORD 인증으로 보호됩니다.
+    </footer>
+  </main>
+
+  <script>
+    const USAGE_FIELDS = [
+      ["uncached_input", "미캐시 입력"],
+      ["cache_read", "캐시 읽기"],
+      ["cache_write_5m", "캐시 쓰기(5m)"],
+      ["cache_write_1h", "캐시 쓰기(1h)"],
+      ["output", "출력"],
+    ];
+
+    const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+    const num = (v) => (typeof v === "number" ? v.toLocaleString("ko-KR") : "-");
+    const cost = (v) => (typeof v === "number" ? "$" + v.toFixed(2) : "-");
+
+    function renderCards(data) {
+      const t = (data.org_usage && data.org_usage.totals) || {};
+      const c = data.cost && !data.cost.error ? data.cost : null;
+      const costCard = c && c.estimated
+        ? `<b>≈ ${cost(c.total_usd)}</b><small>voice-up 추정 비용 합계 (USD) · 사용량×단가</small>`
+        : `<b>${cost(c && c.total_usd)}</b><small>비용 합계 (USD)</small>`;
+      document.getElementById("cards").innerHTML = `
+        <div class="card"><b>${num(t.uncached_input)}</b><small>미캐시 입력토큰 (voice-up)</small></div>
+        <div class="card"><b>${num(t.output)}</b><small>출력토큰 (voice-up)</small></div>
+        <div class="card"><b>${num(t.cache_read)} / ${num((t.cache_write_5m || 0) + (t.cache_write_1h || 0))}</b><small>캐시 읽기/쓰기 토큰 (voice-up)</small></div>
+        <div class="card"><b>${(data.by_key || []).length}</b><small>voice-up API 키 수</small></div>
+        <div class="card cost">${costCard}</div>`;
+    }
+
+    function usageTables(summary, title, note) {
+      if (!summary) return "";
+      const headCols = USAGE_FIELDS.map(([, label]) => `<th class="num">${label}</th>`).join("");
+      const modelRows = summary.models.map((m) => `
+        <tr><td>${esc(m.model)}</td>${USAGE_FIELDS.map(([k]) => `<td class="num">${num(m[k])}</td>`).join("")}
+        <td class="num">${cost(m.est_cost_usd)}</td></tr>`).join("");
+      const t = summary.totals;
+      const knownCosts = summary.models.filter((m) => typeof m.est_cost_usd === "number");
+      const costTotal = knownCosts.reduce((acc, m) => acc + m.est_cost_usd, 0);
+      const costMark = knownCosts.length === summary.models.length ? "" : " *";
+      const totalRow = `<tr class="total-row"><td><b>합계</b></td>${USAGE_FIELDS.map(([k]) => `<td class="num"><b>${num(t[k])}</b></td>`).join("")}<td class="num"><b>${cost(costTotal)}${costMark}</b></td></tr>`
+        + (costMark ? `<tr><td colspan="7" style="color:#98a2b3">* 단가 미등록 모델은 합계에서 제외됨</td></tr>` : "");
+      let dailyRows = summary.daily.map((d) => {
+        const todayLabel = todaySource === "local_log" ? "오늘 · 진행 중 (서버 로그 추정)" : "오늘 · 진행 중 (추정)";
+        const todayBadge = todayUtc && d.date === todayUtc ? ` <span class="badge est">${todayLabel}</span>` : "";
+        return `
+        <tr><td>${esc(d.date)}${todayBadge}</td>${USAGE_FIELDS.map(([k]) => `<td class="num">${num(d[k])}</td>`).join("")}<td class="num">${cost(d.est_cost_usd)}</td></tr>`;
+      }).join("");
+      if (dailyRows) {
+        dailyRows += `<tr class="total-row"><td><b>합계</b></td>${USAGE_FIELDS.map(([k]) => `<td class="num"><b>${num(t[k])}</b></td>`).join("")}<td class="num"><b>${cost(costTotal)}${costMark}</b></td></tr>`;
+      }
+      return `
+        <h3 class="sub-title">${title} ${note ? `<small>· ${note}</small>` : ""}</h3>
+        <div class="table-wrap"><table>
+          <tr><th>모델</th>${headCols}<th class="num">추정비용(USD)</th></tr>${modelRows || '<tr><td colspan="7" style="color:#667085">사용량 없음</td></tr>'}${modelRows ? totalRow : ""}
+        </table></div>
+        ${dailyRows ? `<div class="table-wrap"><table><tr><th>날짜(UTC)</th>${headCols}<th class="num">추정비용(USD)</th></tr>${dailyRows}</table></div>` : ""}`;
+    }
+
+    function byKeyTable(rows, matchedId) {
+      if (!rows) return "";
+      const headCols = USAGE_FIELDS.map(([, label]) => `<th class="num">${label}</th>`).join("");
+      const body = rows.map((r) => {
+        const isCurrent = matchedId && r.api_key_id === matchedId;
+        const name = esc(r.name || "-") + (r.hint ? ` <span style="color:#98a2b3">(${esc(r.hint)})</span>` : "")
+          + (isCurrent ? ' <span class="badge ok">현재 서버 키</span>' : "");
+        return `<tr${isCurrent ? ' style="background:#f1f5ff"' : ""}><td>${name}</td>${USAGE_FIELDS.map(([k]) => `<td class="num">${num(r[k])}</td>`).join("")}<td class="num">${cost(r.est_cost_usd)}</td></tr>`;
+      }).join("");
+      return `
+        <h3 class="sub-title">API 키별 사용량 <small>· voice-up 키만 표시</small></h3>
+        <div class="table-wrap"><table>
+          <tr><th>API 키</th>${headCols}<th class="num">추정비용(USD)</th></tr>
+          ${body || '<tr><td colspan="7" style="color:#667085">사용량 없음</td></tr>'}
+        </table></div>`;
+    }
+
+    function costTables(costData) {
+      if (!costData) return "";
+      if (costData.error) return `<h3 class="sub-title">voice-up 비용</h3><div class="notice-box err">${esc(costData.error)}</div>`;
+      const byModel = Object.entries(costData.by_model || {}).map(([label, v]) => `<tr><td>${esc(label)}</td><td class="num">${cost(v)}</td></tr>`).join("");
+      let daily = (costData.daily || []).map((d) => {
+        const todayBadge = todayUtc && d.date === todayUtc ? ' <span class="badge est">오늘 · 진행 중</span>' : "";
+        return `<tr><td>${esc(d.date)}${todayBadge}</td><td><span class="badge est">추정</span></td><td class="num">${cost(d.amount_usd)}</td></tr>`;
+      }).join("");
+      if (daily) {
+        daily += `<tr class="total-row"><td><b>합계</b></td><td></td><td class="num"><b>≈ ${cost(costData.total_usd)}</b></td></tr>`;
+      }
+      const note = costData.note ? `<div class="notice-box">${esc(costData.note)}</div>` : "";
+      return `
+        <h3 class="sub-title">voice-up 비용 <small>· 합계 ≈ <b>${cost(costData.total_usd)}</b> · Cost API(실측 청구액)는 API 키별 필터를 지원하지 않아 voice-up 사용량×단가 추정치로 표시 (오늘 포함)</small></h3>
+        ${note}
+        <div class="table-wrap"><table><tr><th>모델</th><th class="num">추정비용(USD)</th></tr>${byModel || '<tr><td colspan="2" style="color:#667085">비용 없음</td></tr>'}</table></div>
+        ${daily ? `<div class="table-wrap"><table><tr><th>날짜(UTC)</th><th>구분</th><th class="num">추정비용(USD)</th></tr>${daily}</table></div>` : ""}`;
+    }
+
+    let currentPeriod = "30d";
+    let todayUtc = "";
+    let todaySource = "";
+
+    function setPeriod(period) {
+      currentPeriod = period;
+      loadOrgUsage();
+    }
+
+    const LOG_COLUMNS = [
+      ["호출시각(KST)", "called_at_kst", false],
+      ["사용자ID", "user_id", false],
+      ["분석ID", "analysis_id", false],
+      ["용도", "purpose", false],
+      ["대상", "target", false],
+      ["제공사", "provider", false],
+      ["모델", "model", false],
+      ["입력토큰", "input_tokens", true],
+      ["출력토큰", "output_tokens", true],
+      ["캐시읽기", "cache_read_tokens", true],
+      ["캐시쓰기", "cache_write_tokens", true],
+      ["소요(초)", "duration_sec", true],
+      ["성공", "success_label", false],
+      ["실패유형", "failure_type", false],
+      ["추정비용(USD)", "cost_usd", true],
+    ];
+    const costFine = (v) => (typeof v === "number" ? "$" + v.toFixed(4) : "-");
+
+    async function loadCallLog() {
+      const meta = document.getElementById("logMeta");
+      const body = document.getElementById("logBody");
+      meta.textContent = "불러오는 중...";
+      try {
+        const res = await fetch("/api/admin/call-log?limit=200");
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "호출 로그를 불러오지 못했습니다.");
+        const s = data.summary || {};
+        meta.innerHTML = `총 ${num(data.total)}건 중 최신 ${num(data.rows.length)}건 표시 · 성공 ${num(s.success_calls)} / 실패 ${num(s.failed_calls)} · 누적 추정비용 ${costFine(s.cost_usd)} · 로그 파일: <code>${esc(data.log_path)}</code>`;
+        if (!data.rows.length) {
+          body.innerHTML = `<div class="table-wrap"><div style="padding:32px;text-align:center;color:#667085">기록된 호출이 없습니다. 분석/번역/STT 기능을 사용하면 이곳에 쌓입니다.</div></div>`;
+          return;
+        }
+        const head = "<tr>" + LOG_COLUMNS.map(([label,, isNum]) => `<th${isNum ? ' class="num"' : ""}>${label}</th>`).join("") + "</tr>";
+        const rowsHtml = data.rows.map((row) => {
+          const cells = LOG_COLUMNS.map(([, key, isNum]) => {
+            if (key === "success_label") {
+              return `<td><span class="badge ${row.success ? "ok" : "err"}">${row.success ? "성공" : "실패"}</span></td>`;
+            }
+            const v = row[key];
+            let text;
+            if (v === null || v === undefined || v === "") text = "-";
+            else if (key === "cost_usd") text = costFine(v);
+            else if (typeof v === "number") text = num(v);
+            else text = esc(String(v));
+            return `<td${isNum ? ' class="num"' : ""}>${text}</td>`;
+          }).join("");
+          return `<tr${row.success ? "" : ' style="background:#fef2f2"'}>${cells}</tr>`;
+        }).join("");
+        body.innerHTML = `<div class="table-wrap"><table>${head}${rowsHtml}</table></div>`;
+      } catch (err) {
+        meta.textContent = "호출 로그 조회 실패: " + (err && err.message ? err.message : err);
+        body.innerHTML = "";
+      }
+    }
+
+    async function loadOrgUsage() {
+      const status = document.getElementById("orgStatus");
+      const body = document.getElementById("orgBody");
+      const cards = document.getElementById("cards");
+      const downloadBtn = document.getElementById("downloadBtn");
+      document.getElementById("btn30d").classList.toggle("active", currentPeriod === "30d");
+      document.getElementById("btnAll").classList.toggle("active", currentPeriod === "all");
+      downloadBtn.href = "/api/admin/org-usage.xlsx?period=" + currentPeriod;
+      status.className = "notice-box";
+      status.textContent = currentPeriod === "all"
+        ? "전체 기간 사용량 불러오는 중... (기간이 길면 몇 초 더 걸립니다)"
+        : "계정 전체 사용량 불러오는 중...";
+      body.innerHTML = "";
+      cards.innerHTML = "";
+      try {
+        const res = await fetch("/api/admin/org-usage?period=" + currentPeriod);
+        const data = await res.json();
+        if (!data.ok) {
+          downloadBtn.hidden = true;
+          status.className = "notice-box " + (data.admin_key_missing ? "" : "err");
+          status.innerHTML = data.admin_key_missing
+            ? `<b>Admin API 키가 필요합니다.</b><br>${esc(data.error)}<br>
+               · 일반 <code>CLAUDE_API_KEY</code>로는 과거 전체 내역을 조회할 수 없습니다 — 조직 관리자가 Console(Settings → Organization → API keys)에서 Admin 키를 발급해야 합니다. 개인(individual) 계정은 Admin API를 쓸 수 없습니다.<br>
+               · 발급 후 <code>.env</code>에 <code>ANTHROPIC_ADMIN_KEY=sk-ant-admin01-...</code> 추가 → 서버 재시작.<br>
+               · 키 없이 확인하려면 Console의 <b>Usage/Cost 페이지</b>(platform.claude.com/usage)에서 같은 데이터를 볼 수 있습니다.`
+            : esc(data.error);
+          return;
+        }
+        const mk = data.matched_key;
+        todayUtc = data.today_date || "";
+        todaySource = data.today_source || "";
+        downloadBtn.hidden = false;
+        status.className = data.stale ? "notice-box" : "notice-box ok";
+        const staleNote = data.stale ? `⚠️ 방금 조회가 실패해(호출 한도 등) <b>마지막 성공 데이터</b>를 표시 중입니다. 잠시 후 새로고침하면 갱신됩니다.<br>` : "";
+        status.innerHTML = staleNote + (mk
+          ? `현재 서버의 API 키: <b>${esc(mk.name || "(이름 없음)")}</b> (<code>${esc(mk.hint || mk.id)}</code>) · ${esc(data.period_label || "최근 30일")} 집계 · 데이터 조회 시각 ${esc(data.fetched_at_kst || "-")} (60초 캐시)`
+          : `voice-up 키 중 현재 서버의 CLAUDE_API_KEY와 일치하는 항목이 없습니다. 아래에는 <b>voice-up</b> 키 사용량을 표시합니다.`);
+        if (todaySource === "local_log") {
+          status.innerHTML += `<br>오늘 사용량은 Admin API 집계 지연(~1시간)을 보완하기 위해 <b>이 서버의 호출 로그</b> 기반 추정치로 표시 중입니다. 다른 PC/서비스에서의 오늘 사용분은 Admin 집계에 반영되는 대로 나타납니다.`;
+        }
+        renderCards(data);
+        body.innerHTML =
+          byKeyTable(data.by_key, mk ? mk.id : null)
+          + (mk ? usageTables(data.key_usage, "이 API 키 사용량 (모든 PC/서비스 포함)", "Anthropic 집계 기준") : "")
+          + usageTables(data.org_usage, "voice-up 전체 사용량", "voice-up 키 합산")
+          + costTables(data.cost);
+      } catch (err) {
+        downloadBtn.hidden = true;
+        status.className = "notice-box err";
+        status.textContent = "계정 전체 사용량 조회 실패: " + (err && err.message ? err.message : err);
+      }
+    }
+
+    loadOrgUsage();
+    loadCallLog();
+  </script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+﻿.env
+.env.*
+!.env.example
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+output/
+/reports/
+dist/
+build/
+.streamlit/secrets.toml
+secret/
+secrets/
+
+*.pdf
+*.log
+*.tmp
+*.zip
+
+# STT 평가용 음성 원본/전사 데이터 (용량 656MB + 개인정보) — 저장소에 올리지 않음
+evaluation/speech_data/
+evaluation/voice actor_data/
+
+.DS_Store
+Thumbs.db
+
+# 논문 리비전 작업용 로컬 산출물 (성우 변환 wav, 전사문 포함 상세 CSV, IDE 설정)
+evaluation/voice_actor_16k/
+evaluation/results/**/stt_model_transcripts_and_cer_details.csv
+evaluation/results/**/raw/
+.idea/

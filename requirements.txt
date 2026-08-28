@@ -1,0 +1,9 @@
+python-dotenv>=1.0.1
+google-auth>=2.29.0
+matplotlib>=3.8.0
+reportlab>=4.2.0
+pypdf>=4.2.0
+# Python 3.13에서 표준 cgi 모듈이 제거되어 server.py 실행에 필요 (3.12 이하는 설치 안 함)
+legacy-cgi>=2.6 ; python_version >= "3.13"
+# google-auth 토큰 갱신(google.auth.transport.requests)에 필요 — STT v2 벤치마크
+requests>=2.31.0

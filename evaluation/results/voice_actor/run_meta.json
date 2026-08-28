@@ -1,0 +1,15 @@
+{
+  "run_started_at": "2026-08-28T18:08:24+09:00",
+  "manifest": "evaluation\\voice_actor_manifest.csv",
+  "engines": [
+    "clova",
+    "azure",
+    "whisper",
+    "google",
+    "assemblyai"
+  ],
+  "script_commit": "d04faf8",
+  "python": "3.13.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "run_finished_at": "2026-08-28T18:08:25+09:00"
+}

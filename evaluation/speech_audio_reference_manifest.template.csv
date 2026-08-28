@@ -1,0 +1,3 @@
+audio_id,dataset,category,audio_path,audio_url,reference_path,reference_text
+sample_001,AIHub,meeting,data/evaluation/audio/sample_001.wav,,data/evaluation/references/sample_001.txt,
+sample_002,SoundDream,narration,data/evaluation/audio/sample_002.wav,,data/evaluation/references/sample_002.txt,
