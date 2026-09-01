@@ -32,4 +32,5 @@ Thumbs.db
 evaluation/voice_actor_16k/
 evaluation/results/**/stt_model_transcripts_and_cer_details.csv
 evaluation/results/**/raw/
+evaluation/voice_actor_manifest.csv
 .idea/
