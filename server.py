@@ -43,6 +43,9 @@ PUBLIC_FILES = {
     "/app.js": ROOT / "app.js",
     "/styles.css": ROOT / "styles.css",
 }
+# 홈 화면 사진(assets/*.jpg|png|svg)만 추가로 서빙 — 폴더 밖 경로는 resolve() 뒤 parents 검사로 차단.
+PUBLIC_ASSET_DIR = (ROOT / "assets").resolve()
+PUBLIC_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png", ".svg"}
 ADMIN_PAGE_FILE = ROOT / "admin_token_check.html"
 
 # 무인증 /api/* 가 오픈 프록시로 악용되지 않도록 본문 크기·텍스트 길이·호출 빈도를 제한한다.
@@ -215,6 +218,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             path = "/index.html"
         file_path = PUBLIC_FILES.get(path)
+        if file_path is None and path.startswith("/assets/"):
+            candidate = (PUBLIC_ASSET_DIR / path[len("/assets/"):]).resolve()
+            if candidate.suffix.lower() in PUBLIC_ASSET_SUFFIXES and PUBLIC_ASSET_DIR in candidate.parents:
+                file_path = candidate
         if file_path is None or not file_path.is_file():
             self.send_error(404)
             return
