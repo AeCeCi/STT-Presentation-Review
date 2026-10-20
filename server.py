@@ -34,6 +34,7 @@ STATIC_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
 }
 
 # 정적 파일 화이트리스트 — 여기 없는 경로는 전부 404.
@@ -42,6 +43,7 @@ PUBLIC_FILES = {
     "/index.html": ROOT / "index.html",
     "/app.js": ROOT / "app.js",
     "/styles.css": ROOT / "styles.css",
+    "/favicon.ico": ROOT / "favicon.ico",
 }
 # 홈 화면 사진(assets/*.jpg|png|svg)만 추가로 서빙 — 폴더 밖 경로는 resolve() 뒤 parents 검사로 차단.
 PUBLIC_ASSET_DIR = (ROOT / "assets").resolve()
