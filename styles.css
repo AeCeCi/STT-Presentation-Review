@@ -512,6 +512,18 @@ img { display: block; max-width: 100%; height: auto; }
 @keyframes analyze-pulse { 50% { transform: scale(1.35); opacity: .7; } }
 @media (prefers-reduced-motion: reduce) { .analyze-ring, .analyze-steps li.active::before { animation: none; } }
 
+/* --- 접근 비밀번호 모달 (유료 API 호출 전) --- */
+.access-overlay { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 24px; background: rgba(43, 32, 56, .86); }
+.access-card { width: min(480px, 100%); padding: 40px 36px 28px; border-radius: 24px; background: var(--surface); display: grid; gap: 14px; justify-items: center; text-align: center; }
+.access-card h2 { margin: 0; font-size: 28px; font-weight: 700; }
+.access-lead { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
+.access-lead b { color: var(--text); }
+.access-input { width: 100%; min-height: 50px; margin-top: 4px; padding: 12px 16px; border: 2px solid var(--lilac-light); border-radius: 14px; background: var(--surface); color: var(--text); font-size: 18px; letter-spacing: .12em; text-align: center; }
+.access-input:focus { outline: 2px solid var(--lilac); outline-offset: 0; border-color: var(--lilac); }
+.access-error { min-height: 20px; margin: 0; color: var(--bad); font-size: 14px; font-weight: 600; }
+.access-actions { display: flex; gap: 10px; justify-content: center; }
+.access-foot { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
 /* --- entrances (once, choreographed per section) --- */
 @media (prefers-reduced-motion: no-preference) {
   .js [data-reveal] { opacity: 0; transform: translateY(24px); transition: opacity 600ms var(--ease-out), transform 800ms var(--ease-out); transition-delay: calc(var(--i, 0) * 70ms); }

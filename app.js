@@ -62,6 +62,67 @@ const ready = () => Boolean(state.analysis);
 const nowMs = () => Date.now();
 const userErrorMessage = (err, fallback = "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.") => (err && err.message ? err.message : fallback);
 
+// --- 유료 API 접근 비밀번호: 분석·번역·답변 평가 전에 한 번 묻고, 이 탭을 닫을 때까지 기억한다 ---
+const ACCESS_STORAGE_KEY = "stt_access_password";
+function accessPassword() { try { return sessionStorage.getItem(ACCESS_STORAGE_KEY) || ""; } catch (_) { return ""; } }
+function rememberAccess(pw) { try { sessionStorage.setItem(ACCESS_STORAGE_KEY, pw); } catch (_) {} }
+function forgetAccess() { try { sessionStorage.removeItem(ACCESS_STORAGE_KEY); } catch (_) {} }
+async function paidFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}), "X-Access-Password": encodeURIComponent(accessPassword()) };
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401 || res.status === 503) forgetAccess(); // 서버에서 비밀번호가 바뀌었으면 다음에 다시 묻는다
+  return res;
+}
+const LOCK_SVG = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>';
+function ensureAccess(purpose) {
+  if (accessPassword()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const old = $("accessModal");
+    if (old) old.remove();
+    const wrap = document.createElement("div");
+    wrap.id = "accessModal";
+    wrap.className = "access-overlay";
+    wrap.innerHTML = `
+      <form class="access-card" autocomplete="off" role="dialog" aria-modal="true" aria-labelledby="accessTitle">
+        <span class="circle-icon">${LOCK_SVG}</span>
+        <h2 id="accessTitle">비밀번호 확인</h2>
+        <p class="access-lead"><b>${purpose}</b>은 유료 API(CLOVA Speech · Claude)를 호출합니다.<br>접근 비밀번호를 입력해 주세요.</p>
+        <input id="accessInput" class="access-input" type="password" placeholder="접근 비밀번호" autocomplete="current-password" aria-label="접근 비밀번호">
+        <p id="accessError" class="access-error" role="alert"></p>
+        <div class="access-actions">
+          <button type="button" class="btn outline" id="accessCancel">취소</button>
+          <button type="submit" class="btn lilac" id="accessSubmit">확인</button>
+        </div>
+        <p class="access-foot">이 탭을 닫기 전까지 다시 묻지 않습니다.</p>
+      </form>`;
+    document.body.appendChild(wrap);
+    const input = $("accessInput"), error = $("accessError"), submit = $("accessSubmit");
+    const onKey = (e) => { if (e.key === "Escape") close(false); };
+    const close = (ok) => { document.removeEventListener("keydown", onKey); wrap.remove(); resolve(ok); };
+    document.addEventListener("keydown", onKey);
+    $("accessCancel").onclick = () => close(false);
+    wrap.querySelector("form").onsubmit = async (e) => {
+      e.preventDefault();
+      const pw = input.value.trim();
+      if (!pw) { error.textContent = "비밀번호를 입력해 주세요."; input.focus(); return; }
+      submit.disabled = true;
+      error.textContent = "";
+      try {
+        const res = await fetch("/api/auth/check", { method: "POST", headers: { "X-Access-Password": encodeURIComponent(pw) } });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) { rememberAccess(pw); close(true); return; }
+        error.textContent = data.error || "비밀번호가 맞지 않습니다.";
+        input.select();
+      } catch (err) {
+        error.textContent = userErrorMessage(err, "서버에 연결하지 못했습니다.");
+      } finally {
+        submit.disabled = false;
+      }
+    };
+    setTimeout(() => input.focus(), 50);
+  });
+}
+
 function formatClock(seconds = 0) {
   const total = Math.max(0, Number(seconds || 0));
   const minutes = Math.floor(total / 60);
@@ -1772,10 +1833,11 @@ async function translateStreaming() {
     alert("번역할 한국어 전사문이 없습니다.");
     return;
   }
+  if (!(await ensureAccess("번역"))) return;
   state.translationStatus = "번역 중";
   renderCurrent();
   try {
-    const res = await fetch("/api/translate", {
+    const res = await paidFetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, target: state.targetLang }),
@@ -1797,10 +1859,11 @@ async function translateUploadText() {
     alert("번역할 한국어 전사문이 없습니다.");
     return;
   }
+  if (!(await ensureAccess("번역"))) return;
   state.uploadTranslationStatus = "번역 중";
   renderTab();
   try {
-    const res = await fetch("/api/translate", {
+    const res = await paidFetch("/api/translate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, target: state.targetLang }),
@@ -1924,6 +1987,7 @@ async function analyzePresentation() {
     alert("발표 음성 파일을 선택하거나 발표 연습/실시간 STT 전사문을 생성하세요.");
     return;
   }
+  if (!(await ensureAccess("발표 분석"))) return;
   state.busy = true;
   renderTab();
   showAnalyzeOverlay(`${state.selectedFile ? state.selectedFile.name : "실시간 전사문"}${state.selectedMaterial ? " + " + state.selectedMaterial.name : ""}`);
@@ -1933,7 +1997,7 @@ async function analyzePresentation() {
     if (state.selectedMaterial) form.append("material", state.selectedMaterial);
     if (transcript) form.append("streaming_transcript", transcript);
     if (state.streamingTimeline.length) form.append("streaming_timeline", JSON.stringify(state.streamingTimeline));
-    const res = await fetch("/api/analyze", { method: "POST", body: form });
+    const res = await paidFetch("/api/analyze", { method: "POST", body: form });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "분석 실패");
     const analysis = data.analysis || {};
@@ -1957,6 +2021,7 @@ async function analyzePractice() {
     alert("발표 연습 전사문이 없습니다. 발표 시작 후 실시간 STT를 먼저 진행하세요.");
     return;
   }
+  if (!(await ensureAccess("발표 연습 분석"))) return;
   state.busy = true;
   updatePracticeControls();
   showAnalyzeOverlay(`발표 연습 전사문${state.practiceMaterial ? " + " + state.practiceMaterial.name : ""}`);
@@ -1965,7 +2030,7 @@ async function analyzePractice() {
     if (state.practiceMaterial) form.append("material", state.practiceMaterial);
     form.append("streaming_transcript", transcript);
     form.append("streaming_timeline", JSON.stringify(state.streamingTimeline));
-    const res = await fetch("/api/analyze", { method: "POST", body: form });
+    const res = await paidFetch("/api/analyze", { method: "POST", body: form });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "분석 실패");
     const analysis = data.analysis || {};
@@ -2012,10 +2077,11 @@ async function evaluateAnswer() {
     alert("답변을 입력해 주세요.");
     return;
   }
+  if (!(await ensureAccess("답변 평가"))) return;
   const idx = state.qaIndex;
   state.qaAnswers[idx] = answer;
   try {
-    const res = await fetch("/api/evaluate-answer", {
+    const res = await paidFetch("/api/evaluate-answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: questions()[idx], answer, transcript: state.analysis.transcript || "" }),

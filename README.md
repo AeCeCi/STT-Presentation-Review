@@ -43,7 +43,10 @@ CLOVA_SPEECH_SECRET_KEY
 CLOVA_SPEECH_INVOKE_URL
 CLAUDE_API_KEY
 CLAUDE_MODEL
+API_ACCESS_PASSWORD
 ```
+
+`API_ACCESS_PASSWORD`는 분석·번역·답변 평가처럼 유료 API를 부르는 동작 전에 화면에서 묻는 접근 비밀번호입니다. 값이 없으면 해당 기능이 잠깁니다. 관리자 화면 비밀번호(`ADMIN_PAGE_PASSWORD`)와는 다른 값을 씁니다.
 
 STT 모델 비교 실험용 키는 `.env.private`에 둡니다.
 

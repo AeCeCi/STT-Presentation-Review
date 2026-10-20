@@ -13,10 +13,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import app as analysis_app
-from presentation_review.config.settings import ADMIN_PAGE_PASSWORD, CLAUDE_API_KEY, CLAUDE_MODEL, HAS_ADMIN_KEY
+from presentation_review.config.settings import ADMIN_PAGE_PASSWORD, API_ACCESS_PASSWORD, CLAUDE_API_KEY, CLAUDE_MODEL, HAS_ADMIN_KEY
 from presentation_review.materials.extractor import extract_material_text
 from presentation_review.reports.usage_excel import build_org_usage_xlsx
 from presentation_review.shared import org_usage, token_usage
@@ -59,7 +59,13 @@ RATE_LIMITS = {  # path -> (최대 요청 수, 윈도우 초) — 클라이언�
     "/api/analyze": (20, 600),
     "/api/analyze-text": (20, 600),
     "/api/evaluate-answer": (40, 600),
+    "/api/auth/check": (30, 600),
 }
+
+# 유료 외부 API(CLOVA Speech·Claude)를 호출하는 경로 — X-Access-Password 헤더가 API_ACCESS_PASSWORD와 일치해야 통과.
+PAID_PATHS = {"/api/analyze", "/api/analyze-text", "/api/translate", "/api/evaluate-answer"}
+ACCESS_HEADER = "X-Access-Password"
+AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW = 10, 600  # IP별 비밀번호 오류 허용 횟수 / 윈도우(초)
 
 
 class RateLimiter:
@@ -79,6 +85,17 @@ class RateLimiter:
                 return False
             hits.append(now)
             return True
+
+    def count(self, key: str, window_sec: int) -> int:
+        """윈도우 안의 기록 수만 돌려준다 (기록하지 않음)."""
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits.get(key)
+            if not hits:
+                return 0
+            while hits and now - hits[0] > window_sec:
+                hits.popleft()
+            return len(hits)
 
 
 RATE_LIMITER = RateLimiter()
@@ -194,6 +211,34 @@ class Handler(BaseHTTPRequestHandler):
             "ok": False,
             "error": "ADMIN_PAGE_PASSWORD가 설정되지 않아 관리자 화면은 로컬(127.0.0.1)에서만 접근할 수 있습니다. 운영 배포 시 .env에 ADMIN_PAGE_PASSWORD를 설정하세요.",
         }, 403)
+        return False
+
+    def require_access(self) -> bool:
+        """유료 API(분석·번역·답변 평가) 접근 제어: X-Access-Password 헤더가 API_ACCESS_PASSWORD와 일치해야 한다.
+
+        - 미설정이면 잠금(503). 비밀번호 없이 유료 호출이 열리는 일이 없도록 한다.
+        - 틀린 시도는 IP별로 세어 AUTH_FAIL_LIMIT를 넘으면 429 (무차별 대입 방지).
+        """
+        if not API_ACCESS_PASSWORD:
+            self.send_json({
+                "ok": False,
+                "auth_required": True,
+                "error": "API_ACCESS_PASSWORD가 .env에 없어 분석·번역 기능이 잠겨 있습니다. .env에 값을 넣고 서버를 재시작하세요.",
+            }, 503)
+            return False
+        fail_key = f"auth-fail|{self.client_ip()}"
+        if RATE_LIMITER.count(fail_key, AUTH_FAIL_WINDOW) >= AUTH_FAIL_LIMIT:
+            self.send_json({"ok": False, "auth_required": True, "error": "비밀번호 오류가 너무 많습니다. 10분 후 다시 시도해 주세요."}, 429)
+            return False
+        supplied = unquote(self.headers.get(ACCESS_HEADER, "") or "")
+        if supplied and hmac.compare_digest(supplied, API_ACCESS_PASSWORD):
+            return True
+        RATE_LIMITER.allow(fail_key, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW)
+        self.send_json({
+            "ok": False,
+            "auth_required": True,
+            "error": "접근 비밀번호가 맞지 않습니다." if supplied else "접근 비밀번호가 필요합니다.",
+        }, 401)
         return False
 
     def do_GET(self) -> None:
@@ -422,6 +467,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         if not self.check_request_limits(path):
+            return
+        if path == "/api/auth/check":
+            if self.require_access():
+                self.send_json({"ok": True})
+            return
+        if path in PAID_PATHS and not self.require_access():
             return
         token_usage.begin_request_context(self.client_ip())
         try:
