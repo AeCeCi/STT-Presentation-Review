@@ -79,7 +79,7 @@
       · 데이터 출처: <code>/v1/organizations/usage_report/messages</code> (Admin API 키 필요, <b>voice-up</b> 키로 필터). 오늘 사용량은 시간 단위 집계로 포함되며 완료된 시간까지만 반영됩니다(최대 ~1시간 지연). Admin 집계보다 이 서버의 호출 로그 합계가 크면(집계 지연) 오늘 행을 <b>서버 로그 기반 추정</b>으로 대체해 표시합니다 — 이 경우 다른 PC/서비스의 오늘 사용분은 Admin 집계 반영 후 나타납니다.<br>
       · 추정비용(USD)은 사용일 기준 단가로 계산한 추정치입니다 (sonnet-5 인트로 할인 반영, 배치 할인 등 미반영). Cost API(실측 청구액)는 API 키별 필터를 지원하지 않아 voice-up만 보여주기 위해 이 화면에서는 사용하지 않습니다.<br>
       · Console의 키 목록 페이지(settings/workspaces)의 금액은 조회 기간이 다를 수 있습니다(이 화면은 최근 30일 + 오늘).<br>
-      · 이 화면은 ADMIN_PAGE_PASSWORD 인증으로 보호됩니다.
+      · 이 화면은 관리자(admin) 계정 로그인 세션으로 보호됩니다.
     </footer>
   </main>
 

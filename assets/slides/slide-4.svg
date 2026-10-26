@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" font-family="Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">
+  <rect width="160" height="90" fill="#ffffff"/>
+  <rect x="0" y="0" width="160" height="3" fill="#6541f2"/>
+  <text x="12" y="17" font-size="4.8" font-weight="700" fill="#6541f2">03 · 시장 규모</text>
+  <text x="12" y="30" font-size="8.5" font-weight="800" fill="#171717" letter-spacing="-0.3">국내 발표 코칭 시장 1,200억 원</text>
+  <g stroke="#ececef" stroke-width="0.6">
+    <path d="M12 72h80"/>
+    <path d="M12 60h80"/>
+    <path d="M12 48h80"/>
+  </g>
+  <rect x="20" y="40" width="16" height="32" rx="2" fill="#6541f2"/>
+  <rect x="46" y="52" width="16" height="20" rx="2" fill="#9e86fc"/>
+  <rect x="72" y="63" width="16" height="9" rx="2" fill="#dbd3fe"/>
+  <g font-size="4.4" fill="#5a5c63" text-anchor="middle">
+    <text x="28" y="78">TAM</text>
+    <text x="54" y="78">SAM</text>
+    <text x="80" y="78">SOM</text>
+  </g>
+  <g font-size="4.6" font-weight="700" fill="#171717" text-anchor="middle">
+    <text x="28" y="37.5">1,200억</text>
+    <text x="54" y="49.5">310억</text>
+    <text x="80" y="60.5">45억</text>
+  </g>
+  <rect x="104" y="40" width="44" height="34" rx="5" fill="#f7f7f8"/>
+  <text x="109" y="49" font-size="4.2" fill="#6f727a">연간 창업지원사업 발표</text>
+  <text x="109" y="60" font-size="9" font-weight="800" fill="#171717">2만+</text>
+  <text x="109" y="68" font-size="4" fill="#009632" font-weight="700">▲ 12% YoY</text>
+  <text x="12" y="86" font-size="3.8" fill="#9a9ca3">출처: 중기부 2026 창업지원사업 통합공고</text>
+  <text x="148" y="86" font-size="3.8" fill="#9a9ca3" text-anchor="end">4 / 5</text>
+</svg>

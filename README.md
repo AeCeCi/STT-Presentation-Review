@@ -43,10 +43,26 @@ CLOVA_SPEECH_SECRET_KEY
 CLOVA_SPEECH_INVOKE_URL
 CLAUDE_API_KEY
 CLAUDE_MODEL
-API_ACCESS_PASSWORD
+ADMIN_LOGIN_ID
+ADMIN_LOGIN_PASSWORD
 ```
 
-`API_ACCESS_PASSWORD`는 분석·번역·답변 평가처럼 유료 API를 부르는 동작 전에 화면에서 묻는 접근 비밀번호입니다. 값이 없으면 해당 기능이 잠깁니다. 관리자 화면 비밀번호(`ADMIN_PAGE_PASSWORD`)와는 다른 값을 씁니다.
+모든 `/api/*` 기능(발표 분석·텍스트 분석·번역·답변 평가·PDF 리포트·자료 미리보기·녹음 저장)과 관리자 화면은 로그인(세션 쿠키 `stt_session`, 7일 슬라이딩 만료)이 필요합니다. 정적 파일(`/`, `/app.js`, `/styles.css`, `/assets/*`)만 공개입니다.
+
+- `ADMIN_LOGIN_ID` / `ADMIN_LOGIN_PASSWORD`: 서버 시작 시 **admin 역할 사용자가 하나도 없을 때만** 이 값으로 관리자 계정을 만듭니다. 이후에는 `output/auth/users.json`이 기준이라 `.env` 값을 바꿔도 기존 관리자 비밀번호는 바뀌지 않습니다. 설정이 없고 관리자도 없으면 경고만 남기고 서비스는 계속되며, 로그인은 모두 실패합니다. 비밀번호는 10자 이상.
+- 계정은 `output/auth/users.json`(PBKDF2-SHA256 해시만 저장), 세션은 `output/auth/sessions.json`(토큰의 SHA-256만 저장)에 보관됩니다. 둘 다 `output/`이라 저장소에 올라가지 않습니다.
+- 로그인한 사용자의 기능 호출은 `output/api_usage.jsonl`에 한 줄씩 기록됩니다(사용자·기능·성공 여부·상태 코드·소요 시간·파일명/크기 같은 메타데이터만, 전사문·답변 내용은 기록하지 않음). 관리자는 `/api/admin/usage-log`, `/api/admin/usage-summary`로 조회합니다.
+- 일반 사용자 계정은 관리자 로그인 후 `POST /api/admin/users`로 만들거나 CLI로 관리합니다.
+- (선택) `PORT`(기본 8502), `STT_OUTPUT_DIR`(기본 `output`), 테스트용 `STT_SKIP_DOTENV=1`(`.env`를 읽지 않음).
+
+```
+.venv\Scripts\python.exe -X utf8 -m presentation_review.auth.manage create-user <id> --name <이름> [--role user|admin] [--password-env VAR]
+.venv\Scripts\python.exe -X utf8 -m presentation_review.auth.manage list-users
+.venv\Scripts\python.exe -X utf8 -m presentation_review.auth.manage set-password <id> [--password-env VAR]
+.venv\Scripts\python.exe -X utf8 -m presentation_review.auth.manage disable <id> | enable <id> | delete <id>
+```
+
+비밀번호는 `--password-env`로 지정한 환경 변수에서 읽거나 프롬프트로 입력합니다(명령행 인자로는 받지 않음). 로그인 API는 IP당 10분에 20회, 같은 아이디로 5회 연속 실패하면 10분간 잠깁니다. 서버 테스트는 `.venv\Scripts\python.exe -X utf8 -m unittest tests.test_auth_server -v`로 실행합니다(포트 8512, 임시 `output` 폴더 사용).
 
 STT 모델 비교 실험용 키는 `.env.private`에 둡니다.
 

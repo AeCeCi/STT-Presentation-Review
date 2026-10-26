@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" font-family="Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">
+  <rect width="160" height="90" fill="#ffffff"/>
+  <rect x="0" y="0" width="160" height="3" fill="#6541f2"/>
+  <text x="12" y="17" font-size="4.8" font-weight="700" fill="#6541f2">04 · 팀</text>
+  <text x="12" y="30" font-size="8.5" font-weight="800" fill="#171717" letter-spacing="-0.3">음성 AI와 심사 경험을 가진 네 사람</text>
+  <g>
+    <circle cx="28" cy="52" r="9" fill="#6541f2"/>
+    <text x="28" y="54.6" font-size="7" font-weight="800" fill="#fff" text-anchor="middle">김</text>
+    <text x="28" y="68" font-size="4.6" font-weight="700" fill="#171717" text-anchor="middle">김민준</text>
+    <text x="28" y="74.5" font-size="3.8" fill="#6f727a" text-anchor="middle">대표 · 사업</text>
+  </g>
+  <g>
+    <circle cx="63" cy="52" r="9" fill="#9e86fc"/>
+    <text x="63" y="54.6" font-size="7" font-weight="800" fill="#fff" text-anchor="middle">이</text>
+    <text x="63" y="68" font-size="4.6" font-weight="700" fill="#171717" text-anchor="middle">이서연</text>
+    <text x="63" y="74.5" font-size="3.8" fill="#6f727a" text-anchor="middle">음성 AI 연구</text>
+  </g>
+  <g>
+    <circle cx="98" cy="52" r="9" fill="#c0b0ff"/>
+    <text x="98" y="54.6" font-size="7" font-weight="800" fill="#fff" text-anchor="middle">박</text>
+    <text x="98" y="68" font-size="4.6" font-weight="700" fill="#171717" text-anchor="middle">박지호</text>
+    <text x="98" y="74.5" font-size="3.8" fill="#6f727a" text-anchor="middle">개발 · STT</text>
+  </g>
+  <g>
+    <circle cx="133" cy="52" r="9" fill="#dbd3fe"/>
+    <text x="133" y="54.6" font-size="7" font-weight="800" fill="#6541f2" text-anchor="middle">최</text>
+    <text x="133" y="68" font-size="4.6" font-weight="700" fill="#171717" text-anchor="middle">최수아</text>
+    <text x="133" y="74.5" font-size="3.8" fill="#6f727a" text-anchor="middle">디자인 · UX</text>
+  </g>
+  <text x="148" y="86" font-size="3.8" fill="#9a9ca3" text-anchor="end">5 / 5</text>
+</svg>

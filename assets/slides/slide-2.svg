@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" font-family="Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">
+  <rect width="160" height="90" fill="#ffffff"/>
+  <rect x="0" y="0" width="160" height="3" fill="#6541f2"/>
+  <text x="12" y="17" font-size="4.8" font-weight="700" fill="#6541f2">01 · 문제 정의</text>
+  <text x="12" y="30" font-size="8.5" font-weight="800" fill="#171717" letter-spacing="-0.3">창업가는 발표 연습을 혼자 합니다</text>
+  <g fill="#6541f2">
+    <circle cx="14.5" cy="44" r="1.8"/>
+    <circle cx="14.5" cy="55" r="1.8"/>
+    <circle cx="14.5" cy="66" r="1.8"/>
+  </g>
+  <g fill="#2e2f33" font-size="5.2">
+    <text x="20" y="46">심사위원 피드백은 본선에서야</text>
+    <text x="20" y="57">발표 속도·추임새를 스스로 모른다</text>
+    <text x="20" y="68">자료와 말이 어긋나도 확인 불가</text>
+  </g>
+  <rect x="106" y="38" width="42" height="36" rx="5" fill="#f0ecfe"/>
+  <text x="127" y="57" font-size="14" font-weight="800" fill="#6541f2" text-anchor="middle">87%</text>
+  <text x="127" y="67" font-size="4.6" fill="#5b37ed" text-anchor="middle">피드백 없이 발표 경험</text>
+  <text x="12" y="82" font-size="3.8" fill="#9a9ca3">출처: 2026 창업지원단 설문 (n=412)</text>
+  <text x="148" y="82" font-size="3.8" fill="#9a9ca3" text-anchor="end">2 / 5</text>
+</svg>

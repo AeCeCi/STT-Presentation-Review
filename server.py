@@ -1,8 +1,7 @@
-﻿import base64
-import cgi
-import hmac
+﻿import cgi
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -16,13 +15,25 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlparse
 
 import app as analysis_app
-from presentation_review.config.settings import ADMIN_PAGE_PASSWORD, API_ACCESS_PASSWORD, CLAUDE_API_KEY, CLAUDE_MODEL, HAS_ADMIN_KEY
+from presentation_review.auth import history as auth_history
+from presentation_review.auth import sessions as auth_sessions
+from presentation_review.auth import store as auth_store
+from presentation_review.auth import usage_log as auth_usage
+from presentation_review.config.settings import (
+    ADMIN_LOGIN_ID,
+    ADMIN_LOGIN_PASSWORD,
+    CLAUDE_API_KEY,
+    CLAUDE_MODEL,
+    HAS_ADMIN_KEY,
+    OUTPUT_DIR,
+)
 from presentation_review.materials.extractor import extract_material_text
 from presentation_review.reports.usage_excel import build_org_usage_xlsx
 from presentation_review.shared import org_usage, token_usage
 
 ROOT = Path(__file__).parent
-RECORDING_DIR = ROOT / "output" / "recordings"
+PORT = int(os.environ.get("PORT") or "8502")  # 환경 변수 PORT 로 바꿀 수 있다 (기본 8502)
+RECORDING_DIR = OUTPUT_DIR / "recordings"
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("presentation-review")
 STATIC_TYPES = {
@@ -50,7 +61,7 @@ PUBLIC_ASSET_DIR = (ROOT / "assets").resolve()
 PUBLIC_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png", ".svg"}
 ADMIN_PAGE_FILE = ROOT / "admin_token_check.html"
 
-# 무인증 /api/* 가 오픈 프록시로 악용되지 않도록 본문 크기·텍스트 길이·호출 빈도를 제한한다.
+# 로그인 뒤에도 /api/* 가 오픈 프록시처럼 악용되지 않도록 본문 크기·텍스트 길이·호출 빈도를 제한한다.
 MAX_JSON_BODY_BYTES = 2 * 1024 * 1024        # JSON 요청 본문
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024         # 음성/자료 업로드(multipart)
 MAX_TEXT_CHARS = 20_000                       # 번역 텍스트, Q&A 답변
@@ -61,13 +72,15 @@ RATE_LIMITS = {  # path -> (최대 요청 수, 윈도우 초) — 클라이언�
     "/api/analyze": (20, 600),
     "/api/analyze-text": (20, 600),
     "/api/evaluate-answer": (40, 600),
-    "/api/auth/check": (30, 600),
+    "/api/auth/login": (20, 600),
 }
 
-# 유료 외부 API(CLOVA Speech·Claude)를 호출하는 경로 — X-Access-Password 헤더가 API_ACCESS_PASSWORD와 일치해야 통과.
-PAID_PATHS = {"/api/analyze", "/api/analyze-text", "/api/translate", "/api/evaluate-answer"}
-ACCESS_HEADER = "X-Access-Password"
-AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW = 10, 600  # IP별 비밀번호 오류 허용 횟수 / 윈도우(초)
+# 로그인 시스템 — 모든 /api/* 는 로그인 세션(쿠키 stt_session)이 필요하고, 아래 두 경로만 예외다.
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout"}
+# 사용 로그(output/api_usage.jsonl)에 기록하는 기능 경로 — 유료 4개(분석·텍스트 분석·번역·답변 평가) + 무료 3개(리포트·자료 미리보기·녹음 저장)
+FEATURE_PATHS = frozenset(auth_usage.FEATURE_NAMES)
+LOGIN_FAIL_LIMIT, LOGIN_FAIL_WINDOW = 5, 600  # 같은 아이디의 로그인 실패 허용 횟수 / 윈도우(초) — 넘으면 10분 잠금
+ADMIN_USER_ROUTE = re.compile(r"^/api/admin/users/([^/]+)(?:/(password|status))?$")
 
 
 class RateLimiter:
@@ -98,6 +111,10 @@ class RateLimiter:
             while hits and now - hits[0] > window_sec:
                 hits.popleft()
             return len(hits)
+
+    def reset(self, key: str) -> None:
+        with self._lock:
+            self._hits.pop(key, None)
 
 
 RATE_LIMITER = RateLimiter()
@@ -157,21 +174,32 @@ def translate_text(text: str, target: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    _sent_status: int | None = None   # 마지막으로 보낸 HTTP 상태 (사용 로그용)
+    _usage_detail: dict | None = None  # 기능 호출 중 note_usage() 로 모은 안전한 메타데이터
+
     def log_message(self, format: str, *args) -> None:
         return
 
-    def send_bytes(self, data: bytes, content_type: str, status: int = 200) -> None:
+    def send_response(self, code: int, message: str | None = None) -> None:
+        # send_error 도 여기를 거치므로, 실제로 보낸 상태 코드를 사용 로그에 남길 수 있다.
+        self._sent_status = code
+        super().send_response(code, message)
+
+    def send_bytes(self, data: bytes, content_type: str, status: int = 200, extra_headers: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
-    def send_json(self, payload: dict, status: int = 200) -> None:
+    def send_json(self, payload: dict, status: int = 200, extra_headers: dict | None = None) -> None:
         self.send_bytes(
             json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             "application/json; charset=utf-8",
             status,
+            extra_headers,
         )
 
     def client_ip(self) -> str:
@@ -182,85 +210,246 @@ class Handler(BaseHTTPRequestHandler):
             return forwarded.split(",")[0].strip()
         return self.client_address[0]
 
-    def require_admin_access(self) -> bool:
-        """관리자 화면/엔드포인트 접근 제어.
+    def read_json_body(self) -> dict:
+        """JSON 본문을 dict 로 읽는다. 본문이 없으면 {}, 형식이 틀리면 ValueError."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        if not raw.strip():
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("JSON 객체가 필요합니다.")
+        return data
 
-        - ADMIN_PAGE_PASSWORD 설정 시: HTTP Basic 인증(아이디 무관, 비밀번호 일치) 요구.
-        - 미설정 시: 소켓 주소 기준 로컬(127.0.0.1)에서만 허용. (X-Forwarded-For는 위조
-          가능하므로 보안 판정에는 쓰지 않는다)
-        """
-        if ADMIN_PAGE_PASSWORD:
-            header = self.headers.get("Authorization", "")
-            if header.startswith("Basic "):
-                try:
-                    decoded = base64.b64decode(header[6:]).decode("utf-8")
-                    _, _, password = decoded.partition(":")
-                    if hmac.compare_digest(password, ADMIN_PAGE_PASSWORD):
-                        return True
-                except Exception:
-                    pass
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="admin-token-check"')
-            body = "관리자 비밀번호가 필요합니다.".encode("utf-8")
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return False
-        if self.client_address[0] in ("127.0.0.1", "::1"):
-            return True
-        self.send_json({
-            "ok": False,
-            "error": "ADMIN_PAGE_PASSWORD가 설정되지 않아 관리자 화면은 로컬(127.0.0.1)에서만 접근할 수 있습니다. 운영 배포 시 .env에 ADMIN_PAGE_PASSWORD를 설정하세요.",
-        }, 403)
-        return False
+    def send_bad_json(self) -> None:
+        self.send_json({"ok": False, "error": "JSON 본문이 올바르지 않습니다."}, 400)
 
-    def require_access(self) -> bool:
-        """유료 API(분석·번역·답변 평가) 접근 제어: X-Access-Password 헤더가 API_ACCESS_PASSWORD와 일치해야 한다.
+    # ---------- 로그인 세션 ----------
 
-        - 미설정이면 잠금(503). 비밀번호 없이 유료 호출이 열리는 일이 없도록 한다.
-        - 틀린 시도는 IP별로 세어 AUTH_FAIL_LIMIT를 넘으면 429 (무차별 대입 방지).
-        """
-        if not API_ACCESS_PASSWORD:
-            self.send_json({
-                "ok": False,
-                "auth_required": True,
-                "error": "API_ACCESS_PASSWORD가 .env에 없어 분석·번역 기능이 잠겨 있습니다. .env에 값을 넣고 서버를 재시작하세요.",
-            }, 503)
-            return False
-        fail_key = f"auth-fail|{self.client_ip()}"
-        if RATE_LIMITER.count(fail_key, AUTH_FAIL_WINDOW) >= AUTH_FAIL_LIMIT:
-            self.send_json({"ok": False, "auth_required": True, "error": "비밀번호 오류가 너무 많습니다. 10분 후 다시 시도해 주세요."}, 429)
-            return False
-        supplied = unquote(self.headers.get(ACCESS_HEADER, "") or "")
-        if supplied and hmac.compare_digest(supplied, API_ACCESS_PASSWORD):
-            return True
-        RATE_LIMITER.allow(fail_key, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW)
-        self.send_json({
-            "ok": False,
-            "auth_required": True,
-            "error": "접근 비밀번호가 맞지 않습니다." if supplied else "접근 비밀번호가 필요합니다.",
-        }, 401)
-        return False
+    def is_https(self) -> bool:
+        """리버스 프록시가 X-Forwarded-Proto: https 를 붙였을 때만 쿠키에 Secure 를 단다."""
+        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https"
+
+    def session_token(self) -> str:
+        return auth_sessions.token_from_cookie_header(self.headers.get("Cookie"))
+
+    def session_cookie(self, token: str) -> dict:
+        return {"Set-Cookie": auth_sessions.cookie_header(token, self.is_https())}
+
+    def current_user(self) -> tuple[dict | None, str]:
+        """쿠키의 세션이 유효하면 (사용자, "ok"). 아니면 (None, "none" | "disabled")."""
+        token = self.session_token()
+        session = auth_sessions.get_session(token) if token else None
+        if session is None:
+            return None, "none"
+        user = auth_store.get_user(session.get("user_id", ""))
+        if user is None:  # 삭제된 사용자의 세션은 정리
+            auth_sessions.delete_session(token)
+            return None, "none"
+        if user.get("disabled"):
+            return None, "disabled"
+        return user, "ok"
+
+    def require_login(self) -> dict | None:
+        """로그인 세션이 없으면 401 JSON 을 보내고 None. 있으면 사용자(공개 필드)."""
+        user, state = self.current_user()
+        if user is not None:
+            return user
+        if state == "disabled":
+            self.send_json({"ok": False, "auth_required": True, "error": "비활성화된 계정입니다."}, 401)
+        else:
+            self.send_json({"ok": False, "auth_required": True, "error": "로그인이 필요합니다."}, 401)
+        return None
+
+    def require_admin(self) -> dict | None:
+        """관리자 세션이 아니면 401/403 JSON 을 보내고 None."""
+        user = self.require_login()
+        if user is None:
+            return None
+        if user.get("role") != "admin":
+            self.send_json({"ok": False, "error": "관리자만 사용할 수 있습니다."}, 403)
+            return None
+        return user
+
+    @staticmethod
+    def user_payload(user: dict, with_login: bool = False) -> dict:
+        payload = {"id": user.get("id"), "name": user.get("name"), "role": user.get("role")}
+        if with_login:
+            payload["last_login_at"] = user.get("last_login_at")
+        return payload
+
+    def note_usage(self, **detail) -> None:
+        """사용 로그 detail 에 안전한 메타데이터(파일명·크기·글자 수 등)만 덧붙인다. 내용(전사문·답변)은 넣지 않는다."""
+        if self._usage_detail is not None:
+            self._usage_detail.update({key: value for key, value in detail.items() if value is not None})
+
+    def handle_login(self) -> None:
+        try:
+            data = self.read_json_body()
+        except (ValueError, UnicodeDecodeError):
+            self.send_bad_json()
+            return
+        login_id = auth_store.normalize_id(data.get("id"))
+        password = data.get("password")
+        if not login_id or not isinstance(password, str) or not password:
+            self.send_json({"ok": False, "error": "아이디와 비밀번호를 입력하세요."}, 400)
+            return
+        # 같은 아이디로 LOGIN_FAIL_LIMIT 번 틀리면 10분 잠금 (무차별 대입 방지). IP별 빈도 제한은 check_request_limits 에서.
+        fail_key = f"login-fail|{login_id}"
+        if RATE_LIMITER.count(fail_key, LOGIN_FAIL_WINDOW) >= LOGIN_FAIL_LIMIT:
+            self.send_json({"ok": False, "error": "로그인 시도가 너무 많습니다. 10분 후 다시 시도하세요."}, 429)
+            return
+        user = auth_store.authenticate(login_id, password)
+        if user is None:  # 없는 아이디 / 비밀번호 불일치 / 비활성화 — 같은 메시지
+            RATE_LIMITER.allow(fail_key, LOGIN_FAIL_LIMIT, LOGIN_FAIL_WINDOW)
+            self.send_json({"ok": False, "error": "아이디 또는 비밀번호가 올바르지 않습니다."}, 401)
+            return
+        RATE_LIMITER.reset(fail_key)
+        user = auth_store.record_login(user["id"])
+        token = auth_sessions.create_session(user["id"], self.client_ip(), self.headers.get("User-Agent", ""))
+        self.send_json({"ok": True, "user": self.user_payload(user)}, extra_headers=self.session_cookie(token))
+
+    def handle_logout(self) -> None:
+        token = self.session_token()
+        if token:
+            auth_sessions.delete_session(token)
+        self.send_json({"ok": True}, extra_headers={"Set-Cookie": auth_sessions.expired_cookie_header(self.is_https())})
+
+    def handle_change_password(self, user: dict) -> None:
+        try:
+            data = self.read_json_body()
+        except (ValueError, UnicodeDecodeError):
+            self.send_bad_json()
+            return
+        current = data.get("current_password")
+        new = data.get("new_password")
+        if not isinstance(current, str) or not isinstance(new, str) or not current or not new:
+            self.send_json({"ok": False, "error": "현재 비밀번호와 새 비밀번호를 입력하세요."}, 400)
+            return
+        try:
+            auth_store.change_password(user["id"], current, new)
+        except auth_store.AuthError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+            return
+        # 지금 쓰는 세션만 남기고 다른 기기의 세션은 종료한다.
+        auth_sessions.delete_user_sessions(user["id"], keep_token=self.session_token())
+        self.send_json({"ok": True})
+
+    def handle_admin_post(self, path: str, admin: dict) -> None:
+        try:
+            data = self.read_json_body()
+        except (ValueError, UnicodeDecodeError):
+            self.send_bad_json()
+            return
+        try:
+            if path == "/api/admin/users":
+                user = auth_store.create_user(
+                    data.get("id", ""), data.get("name", ""), data.get("password"),
+                    role=data.get("role") or "user", created_by=admin["id"],
+                )
+                self.send_json({"ok": True, "user": user}, 201)
+                return
+            match = ADMIN_USER_ROUTE.match(path)
+            if not match or not match.group(2):
+                self.send_json({"ok": False, "error": "없는 경로입니다."}, 404)
+                return
+            target = auth_store.normalize_id(unquote(match.group(1)))
+            if match.group(2) == "password":
+                user = auth_store.set_password(target, data.get("password"))
+                # 재설정된 계정의 세션은 모두 종료 (본인 비밀번호를 바꾼 관리자는 현재 세션 유지)
+                auth_sessions.delete_user_sessions(target, keep_token=self.session_token() if target == admin["id"] else None)
+                self.send_json({"ok": True, "user": user})
+                return
+            disabled = data.get("disabled")
+            if not isinstance(disabled, bool):
+                self.send_json({"ok": False, "error": "disabled 값은 true/false 여야 합니다."}, 400)
+                return
+            if disabled and target == admin["id"]:
+                self.send_json({"ok": False, "error": "자기 자신은 비활성화할 수 없습니다."}, 400)
+                return
+            user = auth_store.set_disabled(target, disabled)
+            self.send_json({"ok": True, "user": user})
+        except auth_store.AuthError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+
+    def handle_admin_delete(self, path: str, admin: dict) -> None:
+        match = ADMIN_USER_ROUTE.match(path)
+        if not match or match.group(2):
+            self.send_json({"ok": False, "error": "없는 경로입니다."}, 404)
+            return
+        target = auth_store.normalize_id(unquote(match.group(1)))
+        if target == admin["id"]:
+            self.send_json({"ok": False, "error": "자기 자신은 삭제할 수 없습니다."}, 400)
+            return
+        try:
+            user = auth_store.delete_user(target)
+        except auth_store.AuthError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+            return
+        dropped = auth_sessions.delete_user_sessions(target)
+        removed = auth_history.delete_user_analyses(target)
+        self.send_json({"ok": True, "user": user, "sessions_dropped": dropped, "analyses_removed": removed})
+
+    def handle_usage_log(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            limit = max(1, min(1000, int(query.get("limit", ["200"])[0])))
+        except (TypeError, ValueError):
+            limit = 200
+        items = auth_usage.read_usage(
+            limit=limit,
+            user_id=query.get("user", [""])[0] or None,
+            feature=query.get("feature", [""])[0] or None,
+            since=query.get("since", [""])[0] or None,
+        )
+        self.send_json({"ok": True, "items": items, "count": len(items), "log_path": str(auth_usage.USAGE_LOG_PATH)})
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
-        if (path == "/admin-token-check" or path.startswith("/api/admin/")) and not self.require_admin_access():
+        if path == "/api/auth/me":
+            user = self.require_login()
+            if user is not None:
+                # 응답마다 쿠키 Max-Age 를 다시 7일로 늘려 서버의 슬라이딩 만료와 맞춘다.
+                self.send_json({"ok": True, "user": self.user_payload(user, with_login=True)}, extra_headers=self.session_cookie(self.session_token()))
             return
-        if path == "/admin-token-check":
-            self.send_bytes(ADMIN_PAGE_FILE.read_bytes(), STATIC_TYPES[".html"])
+        if path == "/admin-token-check" or path.startswith("/api/admin/"):
+            # 관리자 화면·엔드포인트는 모두 admin 역할 세션이 필요하다 (미로그인 401 / 일반 사용자 403, 모두 JSON).
+            if self.require_admin() is None:
+                return
+            if path == "/admin-token-check":
+                self.send_bytes(ADMIN_PAGE_FILE.read_bytes(), STATIC_TYPES[".html"])
+            elif path == "/api/admin/org-usage":
+                self.handle_org_usage()
+            elif path == "/api/admin/call-log":
+                self.handle_call_log()
+            elif path == "/api/admin/org-usage-raw":
+                self.handle_org_usage_raw()
+            elif path == "/api/admin/org-usage.xlsx":
+                self.handle_org_usage_xlsx()
+            elif path == "/api/admin/users":
+                users = auth_store.list_users()
+                for item in users:
+                    item["analyses"] = auth_history.count_analyses(item["id"])
+                self.send_json({"ok": True, "users": users})
+            elif path == "/api/admin/usage-log":
+                self.handle_usage_log()
+            elif path == "/api/admin/usage-summary":
+                self.send_json({"ok": True, **auth_usage.usage_summary()})
+            else:
+                self.send_json({"ok": False, "error": "없는 경로입니다."}, 404)
             return
-        elif path == "/api/admin/org-usage":
-            self.handle_org_usage()
+        if path == "/api/history" or path.startswith("/api/history/"):
+            user = self.require_login()
+            if user is not None:
+                self.handle_history_get(path, user)
             return
-        elif path == "/api/admin/call-log":
-            self.handle_call_log()
-            return
-        elif path == "/api/admin/org-usage-raw":
-            self.handle_org_usage_raw()
-            return
-        elif path == "/api/admin/org-usage.xlsx":
-            self.handle_org_usage_xlsx()
+        if path.startswith("/api/"):
+            if self.require_login() is None:
+                return
+            self.send_json({"ok": False, "error": "없는 경로입니다."}, 404)
             return
         if path == "/":
             path = "/index.html"
@@ -470,13 +659,128 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self.check_request_limits(path):
             return
-        if path == "/api/auth/check":
-            if self.require_access():
-                self.send_json({"ok": True})
+        if path == "/api/auth/login":
+            self.handle_login()
             return
-        if path in PAID_PATHS and not self.require_access():
+        if path == "/api/auth/logout":
+            self.handle_logout()
             return
-        token_usage.begin_request_context(self.client_ip())
+        if path == "/api/auth/change-password":
+            user = self.require_login()
+            if user is not None:
+                self.handle_change_password(user)
+            return
+        if path.startswith("/api/admin/"):
+            admin = self.require_admin()
+            if admin is not None:
+                self.handle_admin_post(path, admin)
+            return
+        if path == "/api/history":
+            user = self.require_login()
+            if user is not None:
+                self.handle_history_post(user)
+            return
+        if path.startswith("/api/history/") and path.endswith("/qa"):
+            user = self.require_login()
+            if user is not None:
+                self.handle_history_qa_post(path, user)
+            return
+        if path not in FEATURE_PATHS:
+            self.send_json({"ok": False, "error": "없는 경로입니다."}, 404)
+            return
+        user = self.require_login()
+        if user is None:
+            return  # 로그인 전에는 업로드 파싱·외부 API 호출을 전혀 하지 않는다 (401)
+        self.run_feature(path, user)
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/api/admin/"):
+            admin = self.require_admin()
+            if admin is not None:
+                self.handle_admin_delete(path, admin)
+            return
+        if path.startswith("/api/history/"):
+            user = self.require_login()
+            if user is not None:
+                self.handle_history_delete(path, user)
+            return
+        if path.startswith("/api/"):
+            if self.require_login() is not None:
+                self.send_json({"ok": False, "error": "없는 경로입니다."}, 404)
+            return
+        self.send_error(404)
+
+    # ---------- 계정별 분석 기록 (output/users/<id>/analyses/*.json) ----------
+
+    def handle_history_get(self, path: str, user: dict) -> None:
+        if path == "/api/history":
+            self.send_json({"ok": True, "items": auth_history.list_analyses(user["id"])})
+            return
+        item_id = unquote(path[len("/api/history/"):])
+        try:
+            item = auth_history.get_analysis(user["id"], item_id)
+        except auth_history.HistoryError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+            return
+        if item is None:
+            self.send_json({"ok": False, "error": "분석 기록을 찾을 수 없습니다."}, 404)
+            return
+        self.send_json({"ok": True, "item": item})
+
+    def handle_history_post(self, user: dict) -> None:
+        try:
+            body = self.read_json_body()
+        except ValueError:
+            self.send_bad_json()
+            return
+        try:
+            meta = auth_history.save_analysis(user["id"], body, body.get("analysis"))
+        except auth_history.HistoryError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+            return
+        self.send_json({"ok": True, "item": meta}, 201)
+
+    def handle_history_qa_post(self, path: str, user: dict) -> None:
+        """예상 질문 답변·평가 진행도를 분석 기록에 붙여 둔다 (유료 호출 아님)."""
+        item_id = unquote(path[len("/api/history/"):-len("/qa")])
+        try:
+            body = self.read_json_body()
+        except ValueError:
+            self.send_bad_json()
+            return
+        try:
+            meta = auth_history.update_qa(user["id"], item_id, body.get("qa"))
+        except auth_history.HistoryError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+            return
+        if meta is None:
+            self.send_json({"ok": False, "error": "분석 기록을 찾을 수 없습니다."}, 404)
+            return
+        self.send_json({"ok": True, "item": meta})
+
+    def handle_history_delete(self, path: str, user: dict) -> None:
+        item_id = unquote(path[len("/api/history/"):])
+        try:
+            removed = auth_history.delete_analysis(user["id"], item_id)
+        except auth_history.HistoryError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, exc.status)
+            return
+        if not removed:
+            self.send_json({"ok": False, "error": "분석 기록을 찾을 수 없습니다."}, 404)
+            return
+        self.send_json({"ok": True})
+
+    def run_feature(self, path: str, user: dict) -> None:
+        """로그인 사용자의 기능 호출(FEATURE_PATHS)을 처리하고, 성공·실패와 관계없이 사용 로그를 남긴다."""
+        started = time.perf_counter()
+        self._usage_detail = {}
+        self._sent_status = None
+        try:
+            bytes_in = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            bytes_in = 0
+        token_usage.begin_request_context(user["id"])  # Claude 호출 로그의 사용자ID 칸에도 로그인 아이디가 남는다
         try:
             if path == "/api/analyze":
                 self.handle_analyze()
@@ -492,11 +796,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_evaluate_answer()
             elif path == "/api/report":
                 self.handle_report()
-            else:
-                self.send_error(404)
         except Exception as exc:
             LOGGER.exception("Request failed: %s", path)
             self.send_json({"ok": False, "error": str(exc) or "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."}, 500)
+        finally:
+            try:
+                auth_usage.record(
+                    user_id=user["id"],
+                    role=user.get("role", "-"),
+                    path=path,
+                    status=self._sent_status,
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    bytes_in=bytes_in,
+                    ip=self.client_ip(),
+                    detail=self._usage_detail,
+                )
+            except Exception:
+                LOGGER.exception("usage log write failed: %s", path)
+            self._usage_detail = None
 
     def material_from_form(self, form: cgi.FieldStorage) -> UploadedFile | None:
         material_field = form["material"] if "material" in form else None
@@ -526,9 +843,11 @@ class Handler(BaseHTTPRequestHandler):
                 target = RECORDING_DIR / f"{stem}-{index}{suffix}"
                 index += 1
 
-        target.write_bytes(field.file.read())
+        payload = field.file.read()
+        target.write_bytes(payload)
 
         transcript = str(form.getfirst("transcript", "") or "")
+        self.note_usage(file_name=filename, saved_as=target.name, file_size=len(payload), transcript_chars=len(transcript))
         timeline = str(form.getfirst("timeline", "") or "[]")
         meta_path = target.with_suffix(target.suffix + ".json")
         try:
@@ -560,9 +879,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         streaming_timeline = self.parse_streaming_timeline(str(form.getfirst("streaming_timeline", "") or "[]"))
         material = self.material_from_form(form)
+        self.note_usage(
+            transcript_chars=len(streaming_transcript) or None,
+            material_name=material.name if material else None,
+            material_size=len(material.getvalue()) if material else None,
+        )
 
         if field is None or not getattr(field, "filename", ""):
             if streaming_transcript:
+                self.note_usage(source="streaming_transcript")
                 token_usage.set_call_target(f"실시간 STT 전사문({len(streaming_transcript)}자)")
                 result = analysis_app.run_analysis_from_transcript(streaming_transcript, material, "실시간 STT 전사문", streaming_timeline)
                 self.attach_request_timing(result, request_started, parse_seconds, "실시간 STT 전사문")
@@ -572,6 +897,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         audio = UploadedFile(Path(field.filename).name, field.file.read())
+        self.note_usage(source="audio", file_name=audio.name, file_size=len(audio.getvalue()))
         token_usage.set_call_target(audio.name)
         result = analysis_app.run_analysis(audio, material)
         if streaming_transcript:
@@ -604,9 +930,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "PPT/PDF 발표자료가 없습니다."}, 400)
             return
 
+        self.note_usage(file_name=material.name, file_size=len(material.getvalue()))
         info = extract_material_text(material)
         sections = info.get("sections") or []
         page_count = self.material_page_count(material, info.get("type", ""), sections)
+        self.note_usage(material_type=info.get("type") or None, page_count=page_count, error=info.get("error") or None)
         self.send_json({
             "ok": True,
             "name": info.get("name", ""),
@@ -646,6 +974,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(transcript) > MAX_TRANSCRIPT_CHARS:
             self.send_json({"ok": False, "error": f"전사문이 너무 깁니다 (최대 {MAX_TRANSCRIPT_CHARS:,}자)."}, 400)
             return
+        self.note_usage(transcript_chars=len(transcript))
         token_usage.set_call_target(f"실시간 STT 전사문({len(transcript)}자)")
         result = analysis_app.run_analysis_from_transcript(transcript, None, "실시간 STT 전사문", data.get("timeline", []))
         self.send_json({"ok": True, "analysis": result})
@@ -655,6 +984,7 @@ class Handler(BaseHTTPRequestHandler):
         data = json.loads(self.rfile.read(length).decode("utf-8"))
         text = str(data.get("text", "")).strip()
         target = str(data.get("target", "en")).strip()
+        self.note_usage(text_chars=len(text), target_language=target)
         if not text:
             self.send_json({"ok": True, "translation": ""})
             return
@@ -671,6 +1001,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "답변 또는 전사문이 너무 깁니다."}, 400)
             return
         question_text = str(question.get("question", "") if isinstance(question, dict) else question)[:40]
+        self.note_usage(
+            answer_chars=len(str(data.get("answer", ""))),
+            transcript_chars=len(str(data.get("transcript", ""))),
+            question_chars=len(str(question.get("question", "") if isinstance(question, dict) else question)),
+            question_index=question.get("index") if isinstance(question, dict) else None,
+        )
         token_usage.set_call_target(f"Q&A: {question_text}" if question_text else "Q&A 답변")
         result = analysis_app.evaluate_qa_answer(
             data.get("question", {}),
@@ -686,9 +1022,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "analysis 데이터가 없습니다."}, 400)
             return
         pdf = analysis_app.build_report_pdf(analysis)
+        self.note_usage(file_size=len(pdf))
         self.send_bytes(pdf, "application/pdf")
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1", 8502), Handler)
+    # admin 역할 사용자가 없을 때만 .env(ADMIN_LOGIN_ID/ADMIN_LOGIN_PASSWORD)로 관리자를 만든다.
+    # 설정이 없거나 정책 위반이면 경고만 남기고 계속 서비스한다 (로그인은 전부 실패).
+    bootstrap_status, bootstrap_message = auth_store.bootstrap_admin(ADMIN_LOGIN_ID, ADMIN_LOGIN_PASSWORD)
+    if bootstrap_status in ("created", "exists"):
+        LOGGER.info("auth bootstrap: %s", bootstrap_message)
+    else:
+        LOGGER.warning("auth bootstrap: %s", bootstrap_message)
+    LOGGER.info("serving on http://127.0.0.1:%d (users=%d, auth dir=%s)", PORT, auth_store.count_users(), auth_store.AUTH_DIR)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     server.serve_forever()
