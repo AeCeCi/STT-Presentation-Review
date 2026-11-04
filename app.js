@@ -277,6 +277,23 @@ function scoreWord(score) {
   if (s >= 60) return "보통";
   return "미흡";
 }
+/* 판정 문구를 '짧은 판정어'와 '설명'으로 나눈다.
+   모델에 따라 status 가 "양호 (내용 근거는 강하나 ...)" 처럼 길게 오면 원형 점수 안에 다 못 들어가므로
+   원 안에는 label 만, 설명(note)은 원 바깥에 보여준다. */
+function statusParts(analysis) {
+  const raw = asText(analysis?.status, "").replace(/\s+/g, " ").trim();
+  const fallback = scoreWord(analysis?.score);
+  if (!raw) return { label: fallback, note: "" };
+  const paren = raw.match(/^([^(（]*?)\s*[(（]\s*(.+?)\s*[)）]?\s*$/);
+  if (paren && paren[2]) {
+    const label = paren[1].trim();
+    return { label: label && label.length <= 10 ? label : fallback, note: label && label.length > 10 ? raw : paren[2].trim() };
+  }
+  const sep = raw.match(/^(.{1,10}?)\s*[:：\-–—,，.。·]\s+(.+)$/);
+  if (sep && sep[2]) return { label: sep[1].trim(), note: sep[2].trim() };
+  if (raw.length <= 10) return { label: raw, note: "" };
+  return { label: fallback, note: raw };
+}
 function scoreTone(value) {
   const n = scoreOf(value);
   if (n >= 75) return "good";
@@ -464,6 +481,7 @@ async function submitLogin(event) {
     state.user = data.user;
     state.history = [];
     state.historyLoaded = false;
+    await restoreCurrent(); // 세션이 끊겨 다시 로그인한 경우에도 마지막 분석을 되살린다
     const next = state.pending || { view: "app", tab: "dashboard" };
     state.pending = null;
     toast(`${data.user.name || data.user.id}님, 환영합니다.`);
@@ -483,6 +501,7 @@ async function logout() {
   state.historyLoaded = false;
   state.analysis = null;
   state.analysisMeta = null;
+  forgetCurrent();
   toast("로그아웃했습니다.");
   go("home");
 }
@@ -648,30 +667,67 @@ async function historyRemove(id) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || "삭제 실패");
     state.history = state.history.filter((item) => item.id !== id);
+    if (state.analysisMeta?.historyId === id) forgetCurrent();
     toast("분석 기록을 삭제했습니다.");
   } catch (err) {
     toast(userErrorMessage(err, "삭제하지 못했습니다."), "bad");
   }
   if (state.view === "app" && state.tab === "dashboard") renderDashboard();
 }
+/* 서버 분석 기록 한 건을 받아 현재 분석으로 올린다 (historyOpen 과 새로고침 복원이 함께 쓴다). */
+async function loadHistoryItem(id) {
+  const res = await apiFetch(`/api/history/${encodeURIComponent(id)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || "불러오지 못했습니다.");
+  const meta = normalizeHistoryItem(data.item.meta || {});
+  state.analysis = data.item.analysis;
+  state.analysisMeta = { title: meta.title, audio: meta.audio, material: meta.material, date: meta.date, historyId: id };
+  const qa = data.item.qa || {};
+  state.qaAnswers = { ...(qa.answers || {}) };
+  state.qaResults = { ...(qa.results || {}) };
+  state.qaInfo = { ...(qa.info || {}) };
+  state.qaRedo = {};
+  state.qaModel = {};
+  state.qaOpen = 0;
+}
 async function historyOpen(id, tab = "analysis") {
   try {
-    const res = await apiFetch(`/api/history/${encodeURIComponent(id)}`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || "불러오지 못했습니다.");
-    const meta = normalizeHistoryItem(data.item.meta || {});
-    state.analysis = data.item.analysis;
-    state.analysisMeta = { title: meta.title, audio: meta.audio, material: meta.material, date: meta.date, historyId: id };
-    const qa = data.item.qa || {};
-    state.qaAnswers = { ...(qa.answers || {}) };
-    state.qaResults = { ...(qa.results || {}) };
-    state.qaInfo = { ...(qa.info || {}) };
-    state.qaRedo = {};
-    state.qaModel = {};
-    state.qaOpen = 0;
+    await loadHistoryItem(id);
+    rememberCurrent();
     go("app", tab);
   } catch (err) {
     toast(userErrorMessage(err, "분석 기록을 불러오지 못했습니다."), "bad");
+  }
+}
+
+/* ----- 새로고침 복원 -----
+   화면 상태(state)는 메모리에만 있어서 새로고침하면 사라진다. 분석 결과 자체는 서버 분석 기록에 저장되므로
+   '지금 보고 있는 기록 id'와 결과 탭 위치만 브라우저(localStorage)에 남겨 두고, 다시 열 때 서버에서
+   그 기록을 불러와 보던 화면을 그대로 복원한다. 계정이 다르면 무시하고, 로그아웃·기록 삭제 시 지운다. */
+const CURRENT_KEY = "stt.currentAnalysis";
+function rememberCurrent() {
+  try {
+    const id = state.analysisMeta?.historyId;
+    if (!id || !state.user) return;
+    localStorage.setItem(CURRENT_KEY, JSON.stringify({ id, user: state.user.id, resultsTab: state.resultsTab, summaryTab: state.summaryTab }));
+  } catch (_) { /* 저장 불가 환경(시크릿 모드 등)에서는 복원만 안 될 뿐 기능은 그대로 */ }
+}
+function forgetCurrent() {
+  try { localStorage.removeItem(CURRENT_KEY); } catch (_) { /* ignore */ }
+}
+async function restoreCurrent() {
+  if (state.analysis || !state.user) return false;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(CURRENT_KEY) || "null"); } catch (_) { saved = null; }
+  if (!saved?.id || (saved.user && saved.user !== state.user.id)) return false;
+  try {
+    await loadHistoryItem(saved.id);
+    if (["summary", "match", "speech", "transcript"].includes(saved.resultsTab)) state.resultsTab = saved.resultsTab;
+    if (["problems", "priorities", "match", "questions"].includes(saved.summaryTab)) state.summaryTab = saved.summaryTab;
+    return true;
+  } catch (_) {
+    forgetCurrent(); // 삭제됐거나 더 이상 못 여는 기록이면 다음부터 시도하지 않는다
+    return false;
   }
 }
 
@@ -853,6 +909,7 @@ window.addEventListener("popstate", () => {
 });
 async function boot() {
   await loadMe();
+  if (state.user) await restoreCurrent(); // 새로고침해도 보던 분석 결과를 유지한다
   applyRoute(location.hash, false);
 }
 
@@ -1975,10 +2032,12 @@ function gradeChip(a) {
 }
 function setResultsTab(tab) {
   state.resultsTab = tab;
+  rememberCurrent();
   renderAnalysis();
 }
 function setSummaryTab(tab) {
   state.summaryTab = tab;
+  rememberCurrent();
   renderSummary();
 }
 function lowestVoice(a) {
@@ -2024,7 +2083,7 @@ function renderAnalysis() {
     <div class="page-body"><div class="container stack-24">
       ${llmFailed ? notice(`<b>AI 종합평가 실패</b> ${html(a.llm_error)} 아래 내용은 CLOVA 전사문과 Python 측정 지표만으로 표시된 결과입니다.`, "bad", "alert") : ""}
       <section class="card kpi">
-        <div class="stat"><span class="stat-label">${icon("award")}종합 점수</span><div class="stat-value big">${llmFailed ? "–" : `${scoreOf(a.score)}<small>/100</small>${gradeChip(a)}`}</div><span class="stat-note">${llmFailed ? "AI 평가 실패" : `판정 <b>${html(asText(a.status, "") || scoreWord(a.score))}</b>${low[0] ? ` · ${html(low[0])}(${low[1]}점)이 가장 낮습니다` : ""}`}</span></div>
+        <div class="stat"><span class="stat-label">${icon("award")}종합 점수</span><div class="stat-value big">${llmFailed ? "–" : `${scoreOf(a.score)}<small>/100</small>${gradeChip(a)}`}</div><span class="stat-note">${llmFailed ? "AI 평가 실패" : `판정 <b>${html(statusParts(a).label)}</b>${statusParts(a).note ? ` (${html(statusParts(a).note)})` : ""}${low[0] ? ` · ${html(low[0])}(${low[1]}점)이 가장 낮습니다` : ""}`}</span></div>
         <div class="stat"><span class="stat-label">${icon("activity")}평균 발화 속도</span><div class="stat-value">${wpm}<small>WPM</small></div><div class="range"><i style="left:42.9%;width:21.4%"></i><em class="${inRange ? "ok" : ""}" style="left:${markerLeft.toFixed(1)}%"></em></div><span class="stat-note ${inRange ? "tone-good" : "tone-warn"}">${paceNote}</span></div>
         <div class="stat"><span class="stat-label">${icon("volume")}추임새</span><div class="stat-value">${fillers}<small>회</small></div><div class="filler-chips">${fw.length ? fw.map((x) => `<span>${html(x.word)} ${html(x.count)}</span>`).join("") : `<span>감지된 단어 없음</span>`}</div><span class="stat-note ${fillers >= sentences * 0.3 && sentences ? "tone-bad" : ""}">${fillerNote}</span></div>
         <div class="stat"><span class="stat-label">${icon("file")}자료 일치율</span>${match?.available
@@ -2392,7 +2451,8 @@ function renderSummary() {
     <div class="page-body"><div class="container stack-24">
       <section class="sum-hero">
         <div class="left">
-          ${ring(llmFailed ? 0 : a.score, "lg on-dark orange", llmFailed ? `–` : `${html(gradeOf(a))}<small>${scoreOf(a.score)} / 100 · ${html(asText(a.status, "") || scoreWord(a.score))}</small>`)}
+          ${ring(llmFailed ? 0 : a.score, "lg on-dark orange", llmFailed ? `–` : `${html(gradeOf(a))}<small>${scoreOf(a.score)} / 100 · ${html(statusParts(a).label)}</small>`)}
+          ${!llmFailed && statusParts(a).note ? `<p class="status-note">${html(statusParts(a).note)}</p>` : ""}
           <div class="cnt"><div><b>${problems.length}<small>건</small></b><small>문제점</small></div><div><b>${priorities.length}<small>건</small></b><small>보완 사항</small></div><div><b>${qs.length}<small>개</small></b><small>예상 질문</small></div></div>
         </div>
         <div>
@@ -2524,6 +2584,7 @@ async function finishAnalysis(analysis, meta) {
   state.summaryTab = "problems";
   const entry = await historyAdd(analysis, meta);
   if (entry) state.analysisMeta.historyId = entry.id;
+  rememberCurrent();
   if (state.practice.phase === "summary") state.practice.phase = "done";
   state.registerOpen = false;
 }

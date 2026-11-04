@@ -153,18 +153,58 @@ def meaningful_text(value: Any, default: str = "") -> str:
     return text
 
 
+def as_item_list(value: Any, group_key: str = "") -> list[Any]:
+    """모델이 목록을 배열 대신 다른 형태로 줘도 항목 배열로 편다.
+
+    - {"items": [...]} / {"list": [...]} 처럼 감싼 경우 → 안쪽 배열
+    - {"심각": [...], "주의": [...]} 처럼 그룹으로 묶은 경우 → 이어 붙이고, 그룹 이름을 group_key 로 각 항목에 채운다
+    - 항목 하나짜리 객체 → [객체]
+    """
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, dict):
+        return []
+    for key in ("items", "list", "entries", "data"):
+        if isinstance(value.get(key), list):
+            return value[key]
+    flattened: list[Any] = []
+    for key, group in value.items():
+        if isinstance(group, list):
+            for item in group:
+                if isinstance(item, dict) and group_key and not item.get(group_key):
+                    item = {**item, group_key: str(key)}
+                flattened.append(item)
+    if flattened:
+        return flattened
+    return [value]
+
+
+def first_text(item: dict[str, Any], *keys: str) -> str:
+    """후보 키 가운데 처음으로 의미 있는 문자열을 돌려준다 (모델별 키 이름 차이 흡수)."""
+    for key in keys:
+        text = meaningful_text(item.get(key))
+        if text:
+            return text
+    return ""
+
+
 def clean_problem_items(items: Any) -> list[dict[str, Any]]:
     cleaned = []
-    for item in items if isinstance(items, list) else []:
+    for item in as_item_list(items, group_key="level"):
         if isinstance(item, str):
             row = {"category": "문제", "level": "확인", "title": meaningful_text(item), "fix": ""}
-        else:
+        elif isinstance(item, dict):
             row = {
-                "category": text_value(item.get("category") if isinstance(item, dict) else "", "문제"),
-                "level": text_value(item.get("level") if isinstance(item, dict) else "", "확인"),
-                "title": meaningful_text((item.get("title") or item.get("problem") or item.get("issue")) if isinstance(item, dict) else ""),
-                "fix": meaningful_text((item.get("fix") or item.get("solution") or item.get("detail")) if isinstance(item, dict) else ""),
+                "category": text_value(item.get("category") or item.get("type") or item.get("area"), "문제"),
+                "level": text_value(item.get("level") or item.get("severity") or item.get("priority"), "확인"),
+                "title": first_text(item, "title", "problem", "issue", "name", "summary", "description", "text"),
+                "fix": first_text(item, "fix", "solution", "detail", "recommendation", "suggestion", "action", "improvement", "advice"),
             }
+            # 제목 후보가 description 뿐이라 fix 와 같은 문장이 되면 fix 를 비운다
+            if row["title"] and row["title"] == row["fix"]:
+                row["fix"] = ""
+        else:
+            continue
         if row["title"] or row["fix"]:
             cleaned.append(row)
     return cleaned
@@ -172,15 +212,17 @@ def clean_problem_items(items: Any) -> list[dict[str, Any]]:
 
 def clean_question_items(items: Any) -> list[dict[str, Any]]:
     cleaned = []
-    for item in items if isinstance(items, list) else []:
+    for item in as_item_list(items, group_key="category"):
         if isinstance(item, str):
             row = {"category": "질문", "question": meaningful_text(item), "level": "-"}
-        else:
+        elif isinstance(item, dict):
             row = {
-                "category": text_value((item.get("category") or item.get("type")) if isinstance(item, dict) else "", "질문"),
-                "question": meaningful_text((item.get("question") or item.get("title") or item.get("text")) if isinstance(item, dict) else ""),
-                "level": text_value((item.get("level") or item.get("difficulty")) if isinstance(item, dict) else "", "-"),
+                "category": text_value(item.get("category") or item.get("type") or item.get("area"), "질문"),
+                "question": first_text(item, "question", "title", "text", "content"),
+                "level": text_value(item.get("level") or item.get("difficulty"), "-"),
             }
+        else:
+            continue
         if row["question"]:
             cleaned.append(row)
     return cleaned
@@ -188,15 +230,19 @@ def clean_question_items(items: Any) -> list[dict[str, Any]]:
 
 def clean_priority_items(items: Any) -> list[dict[str, Any]]:
     cleaned = []
-    for item in items if isinstance(items, list) else []:
+    for item in as_item_list(items, group_key="impact"):
         if isinstance(item, str):
             row = {"title": meaningful_text(item), "impact": "", "detail": ""}
-        else:
+        elif isinstance(item, dict):
             row = {
-                "title": meaningful_text((item.get("title") or item.get("priority") or item.get("name")) if isinstance(item, dict) else ""),
-                "impact": text_value((item.get("impact") or item.get("level")) if isinstance(item, dict) else ""),
-                "detail": meaningful_text((item.get("detail") or item.get("fix") or item.get("reason")) if isinstance(item, dict) else ""),
+                "title": first_text(item, "title", "priority", "name", "action", "item", "area", "summary"),
+                "impact": text_value(item.get("impact") or item.get("level") or item.get("severity") or item.get("rank"), ""),
+                "detail": first_text(item, "detail", "fix", "reason", "description", "recommendation", "how", "why", "suggestion", "text"),
             }
+            if row["title"] and row["title"] == row["detail"]:
+                row["detail"] = ""
+        else:
+            continue
         if row["title"] or row["detail"]:
             cleaned.append(row)
     return cleaned
@@ -204,7 +250,7 @@ def clean_priority_items(items: Any) -> list[dict[str, Any]]:
 
 def clean_vocab_suggestions(items: Any) -> list[dict[str, Any]]:
     cleaned = []
-    for item in items if isinstance(items, list) else []:
+    for item in as_item_list(items):
         if isinstance(item, str):
             row = {"original": item, "replacement": "", "reason": ""}
         elif isinstance(item, dict):
@@ -248,7 +294,10 @@ def normalize_analysis(judged: dict[str, Any], base: dict[str, Any]) -> dict[str
     result["wpm"] = clamp_number(result.get("wpm"), base["wpm"], 0, 500)
     voice = result.get("voice_scores") if isinstance(result.get("voice_scores"), dict) else {}
     result["voice_scores"] = {key: clamp_number(voice.get(key), 0, 0, 100) for key in ["발표 흐름", "내용 전달력", "Q&A 대응", "시간 관리"]}
-    for key in ["pace_series", "sentence_segments", "speaker_stats", "filler_words", "vocab_suggestions", "slide_rows", "problems", "questions", "improvement_priorities"]:
+    for key in ["vocab_suggestions", "problems", "questions", "improvement_priorities"]:
+        # 배열이 아닌 형태(그룹 객체, {"items": [...]})로 와도 버리지 않고 펴서 정리 함수로 넘긴다
+        result[key] = as_item_list(result.get(key), group_key={"problems": "level", "improvement_priorities": "impact", "questions": "category"}.get(key, ""))
+    for key in ["pace_series", "sentence_segments", "speaker_stats", "filler_words", "slide_rows"]:
         if not isinstance(result.get(key), list):
             result[key] = []
     result["vocab_suggestions"] = clean_vocab_suggestions(result.get("vocab_suggestions"))
@@ -294,17 +343,32 @@ def llm_analysis(transcript: str, audio_name: str, measured_pace: list[dict[str,
         raise RuntimeError("전사문이 비어 있어 분석할 수 없습니다. 음성 전사 결과를 확인해 주세요.")
 
     system_prompt = "You are a Korean IR presentation reviewer. Return JSON only."
+    # 항목별 필드 이름을 명시한다. 모델마다 임의의 키(description, recommendation 등)나 심각도별 묶음으로
+    # 돌려주면 정리 단계에서 버려져 문제점·보완 사항이 비어 보이므로, 형태를 고정해 요구한다.
     user_prompt = (
         "Evaluate this Korean presentation. Use Python metrics as the source of truth for WPM, filler counts, pauses, and timestamps.\n"
-        "Return JSON with keys: score, grade, status, wpm, vocab_issues, voice_scores, pace_series, filler_words, vocab_suggestions, slide_rows, problems, questions, improvement_priorities, summary.\n"
-        "Generate exactly 10 questions.\n\n"
+        "Return one JSON object with exactly these keys and shapes (all text in Korean):\n"
+        "- score: integer 0-100\n"
+        "- grade: one of A, A-, B+, B, B-, C+, C\n"
+        "- status: short verdict of at most 6 Korean characters (예: 우수, 양호, 보통, 보완 필요); put any explanation in summary, not here\n"
+        "- wpm: integer\n"
+        "- vocab_issues: integer\n"
+        "- voice_scores: object {\"발표 흐름\": 0-100, \"내용 전달력\": 0-100, \"Q&A 대응\": 0-100, \"시간 관리\": 0-100}\n"
+        "- pace_series, filler_words, slide_rows: copy from the Python metrics\n"
+        "- vocab_suggestions: array of {\"original\": string, \"replacement\": string, \"reason\": string}\n"
+        "- problems: array of 5 to 10 objects {\"category\": string, \"level\": \"심각\"|\"주의\"|\"확인\", \"title\": string, \"fix\": string}, ordered by impact\n"
+        "- improvement_priorities: array of 3 to 7 objects {\"title\": string, \"impact\": \"높음\"|\"중간\"|\"낮음\", \"detail\": string}, ordered by priority\n"
+        "- questions: array of exactly 10 objects {\"category\": string, \"question\": string, \"level\": \"상\"|\"중\"|\"하\"}\n"
+        "- summary: string, 3 to 5 sentences\n"
+        "Every array must be a flat JSON array of objects using exactly those field names. Do not group items by severity, do not nest arrays inside objects, and do not add other keys.\n\n"
         f"[Python metrics]\n{json.dumps(quantitative_metrics, ensure_ascii=False)}\n\n"
         f"[Sentence timeline]\n{json.dumps(sentence_segments[:160], ensure_ascii=False)}\n\n"
         f"[Speaker stats]\n{json.dumps(speaker_stats, ensure_ascii=False)}\n\n"
         f"[STT transcript]\n{transcript[:7000]}"
     )
     try:
-        judged = call_claude(system_prompt, user_prompt, max_tokens=5000, purpose="발표 종합 평가")
+        # 5.5 세대 모델은 내부 추론(thinking) 토큰도 max_tokens 에 포함되므로 넉넉히 잡는다 (상한일 뿐 실제 사용량만 과금).
+        judged = call_claude(system_prompt, user_prompt, max_tokens=16000, purpose="발표 종합 평가")
     except Exception as exc:
         raise RuntimeError(f"Claude API 분석 호출에 실패했습니다: {exc}") from exc
     result = normalize_analysis(judged, base)
@@ -327,7 +391,7 @@ def evaluate_qa_answer(question: dict[str, Any], answer: str, transcript: str) -
         f"[발표 전사]\n{transcript[:3000]}\n\n[질문]\n{question.get('question', '')}\n\n[답변]\n{answer[:3000]}"
     )
     try:
-        judged = call_claude(system_prompt, user_prompt, max_tokens=2500, purpose="Q&A 답변 평가")
+        judged = call_claude(system_prompt, user_prompt, max_tokens=8000, purpose="Q&A 답변 평가")
     except Exception as exc:
         raise RuntimeError(f"Claude API 답변 평가 호출에 실패했습니다: {exc}") from exc
     return {

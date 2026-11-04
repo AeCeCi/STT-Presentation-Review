@@ -252,7 +252,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .ring.lg .track, .ring.lg .fill { stroke-width: 10; }
 .ring.lg b { font-size: 56px; }
 .ring.lg b small { margin-top: 6px; }
-.ring.lg b small { font-size: 13px; }
+.ring.lg b small { font-size: 13px; max-width: 140px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ring.on-dark .track { stroke: rgba(255, 255, 255, 0.12); }
 .ring.on-dark b { color: var(--orange-70); }
 .ring.on-dark b small { color: var(--on-dark-2); }
@@ -803,6 +803,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* summary (종합 결과) */
 .sum-hero { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 48px; align-items: center; padding: 48px; border-radius: var(--r-20); background: var(--dark); color: #fff; }
 .sum-hero .left { display: grid; justify-items: center; gap: 24px; }
+.sum-hero .status-note { margin: -10px 0 0; max-width: 280px; text-align: center; font-size: 13px; line-height: 20px; color: var(--on-dark-2); word-break: keep-all; }
 .sum-hero .cnt { display: flex; gap: 28px; }
 .sum-hero .cnt div { text-align: center; }
 .sum-hero .cnt b { display: block; font-size: 28px; line-height: 34px; }

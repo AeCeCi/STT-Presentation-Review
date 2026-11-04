@@ -146,7 +146,7 @@ def translate_text(text: str, target: str) -> str:
     language = TRANSLATION_LANGUAGES.get(target, "English")
     payload = {
         "model": CLAUDE_MODEL,
-        "max_tokens": 1600,
+        "max_tokens": 4000,  # 5.5 모델은 thinking 토큰 포함이라 여유 있게
         "system": "You are a professional real-time speech translator.",
         "messages": [{
             "role": "user",

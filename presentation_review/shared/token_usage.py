@@ -32,6 +32,8 @@ _claude_timing: ContextVar[dict | None] = ContextVar("claude_timing", default=No
 PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
     "claude-mythos-5": (10.0, 50.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
     "claude-opus-5": (5.0, 25.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
