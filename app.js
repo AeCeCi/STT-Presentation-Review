@@ -278,20 +278,26 @@ function scoreWord(score) {
   return "미흡";
 }
 /* 판정 문구를 '짧은 판정어'와 '설명'으로 나눈다.
-   모델에 따라 status 가 "양호 (내용 근거는 강하나 ...)" 처럼 길게 오면 원형 점수 안에 다 못 들어가므로
-   원 안에는 label 만, 설명(note)은 원 바깥에 보여준다. */
+   원형 점수 안에는 "NN / 100 · 판정어"가 한 줄로 들어가야 하므로 판정어는 5자(예: 보완 필요)까지만 링에 넣는다.
+   그보다 길거나 "양호 (내용 근거는 ...)" 처럼 설명이 붙어 오면, 링에는 점수대 판정어(우수/양호/보통/미흡)를 쓰고
+   모델이 준 문구는 링 아래 설명(status-note)으로 보낸다. */
+const STATUS_LABEL_MAX = 5;
 function statusParts(analysis) {
   const raw = asText(analysis?.status, "").replace(/\s+/g, " ").trim();
   const fallback = scoreWord(analysis?.score);
   if (!raw) return { label: fallback, note: "" };
+  const fits = (text) => Boolean(text) && text.length <= STATUS_LABEL_MAX;
   const paren = raw.match(/^([^(（]*?)\s*[(（]\s*(.+?)\s*[)）]?\s*$/);
   if (paren && paren[2]) {
     const label = paren[1].trim();
-    return { label: label && label.length <= 10 ? label : fallback, note: label && label.length > 10 ? raw : paren[2].trim() };
+    return fits(label) ? { label, note: paren[2].trim() } : { label: fallback, note: raw };
   }
   const sep = raw.match(/^(.{1,10}?)\s*[:：\-–—,，.。·]\s+(.+)$/);
-  if (sep && sep[2]) return { label: sep[1].trim(), note: sep[2].trim() };
-  if (raw.length <= 10) return { label: raw, note: "" };
+  if (sep && sep[2]) {
+    const label = sep[1].trim();
+    return fits(label) ? { label, note: sep[2].trim() } : { label: fallback, note: raw };
+  }
+  if (fits(raw)) return { label: raw, note: "" };
   return { label: fallback, note: raw };
 }
 function scoreTone(value) {

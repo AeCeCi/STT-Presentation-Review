@@ -252,7 +252,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .ring.lg .track, .ring.lg .fill { stroke-width: 10; }
 .ring.lg b { font-size: 56px; }
 .ring.lg b small { margin-top: 6px; }
-.ring.lg b small { font-size: 13px; max-width: 140px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ring.lg b small { font-size: 13px; max-width: 150px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ring.on-dark .track { stroke: rgba(255, 255, 255, 0.12); }
 .ring.on-dark b { color: var(--orange-70); }
 .ring.on-dark b small { color: var(--on-dark-2); }
